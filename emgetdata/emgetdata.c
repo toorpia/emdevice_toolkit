@@ -1,15 +1,3 @@
-/* Copyright (Draft)
- * (C) 2023 Tokuyama Coooration, Easy Mejor Inc., and toor Inc. All rights reserved.
- *  This software is licensed exclusively to Tokuyama Corporation under the terms of the agreement between
- *  Tokuyama Corporation, Easy Mejor Inc., and toor Inc.
- *  Unauthorized use, copying, distribution, or modification of this software is strictly prohibited.
-  
- *  Third-party use: this software may be used by third parties under the following conditions: <- これを含めるかどうかは要検討
- *   1. The third party must obtain written permission from Tokuyama Corporation before using the software.
- *   2. The third party must not modify, reverse engineer, or create derivative works based on the software.
- *   3. The third party must include the copyright notice and this permission notice in all copies or substantial portions of the software.
- *   4. The third party must not use the software for commercial purposes without obtaining a separate commercial license from Tokuyama Corporation.
- */
 #define VERSION "0.1.0"
 #define COPYRIGHT "Copyright (C) 2023 Tokuyama Coooration, Easy Mejor Inc., and toor Inc. All rights reserved."
 
