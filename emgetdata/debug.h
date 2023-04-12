@@ -4,7 +4,9 @@
 #include <stdio.h>
 
 // デバッグモードであれば1、そうでなければ0を設定します。
-#define DEBUG_MODE 1
+#ifndef DEBUG_MODE
+#define DEBUG_MODE 0
+#endif
 
 #if DEBUG_MODE
 #define DEBUG_PRINT(...) fprintf(stderr, __VA_ARGS__)

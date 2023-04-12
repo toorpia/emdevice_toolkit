@@ -23,6 +23,7 @@
 #include <yaml.h>
 #include <sndfile.h>
 #include <time.h>
+#include <math.h>
 #include "debug.h"
 
 #define BUF_SIZE 1024
@@ -30,6 +31,8 @@
 #define NUM_CHANNELS 4
 #define NUM_SENSORS 20
 #define DATA_SIZE 1026
+#define NUM_DATA_PER_PACKET 128 // 128 data per packet
+#define EPSILON 1.0e-9
 
 // Sensor data structure
 typedef struct {
@@ -78,7 +81,7 @@ const GainData gain_data_map[] = {
 
 void error_handling(char *message);
 void read_config(const char *filename, Config *config);
-void getdata(int socket, Config *config, int block_count, const char *sensor_to_record, int duration);
+void getdata(int socket, Config *config, double duration, const char *block_to_record, const char *sensor_to_record);
 int send_start_command_of_block(int sock, struct sockaddr_in *serv_addr, Config *config, int block_count);
 int send_stop_command_of_block(int sock, struct sockaddr_in *serv_addr);
 
@@ -96,13 +99,6 @@ void usage() {
 int main(int argc, char *argv[]) {
     int sock;
     struct sockaddr_in serv_addr;
-    char message[BUF_SIZE];
-    char start_command[32];
-    char stop_command[32];
-    int str_len;
-    char response[32];
-    int response_len;
-    char channel[BUF_SIZE];
 
     // 引数処理
     // -f config_file: configファイル指定
@@ -113,15 +109,21 @@ int main(int argc, char *argv[]) {
     Config config;
     const char *config_filename = "config.yml";
     int opt;
-    int duration = 10; // default: 10 sec.
+    double duration = 10.0; // default: 10 sec.
     const char *sensor_to_record = "";
-    while ((opt = getopt(argc, argv, "fts:hv")) != -1) {
+    while ((opt = getopt(argc, argv, "f:t:s:hv")) != -1) {
         switch (opt) {
             case 'f':
                 config_filename = optarg;
                 break;
             case 't':
-                duration = atoi(optarg);
+                if (optarg != NULL) {
+                    duration = atof(optarg);
+                    DEBUG_PRINT("duration: %f\n", duration);
+                } else {
+                    printf("Error: Duration argument is missing or invalid.\n");
+                    exit(1);
+                }
                 break;
             case 's':
                 sensor_to_record = optarg;
@@ -140,7 +142,7 @@ int main(int argc, char *argv[]) {
     read_config(config_filename, &config);
 
     // 引数で特定のセンサーが指定された場合、configファイルに当該センサーの定義があるかどうかを確認する
-    if (sensor_to_record != "") {
+    if (strcmp(sensor_to_record, "") != 0) {
         int found = 0;
         for (int j = 0; j < NUM_SENSORS; j++) {
             if (strcmp(config.sensors[j].label, sensor_to_record) == 0) {
@@ -174,7 +176,7 @@ int main(int argc, char *argv[]) {
     // block毎にデータを取得
     for (int block_count = 0; block_count < NUM_BLOCKS; block_count++) {
         // 特定のセンサーのみ記録する場合は、このブロックに当該センサーラベルがあるかチェック
-        if (sensor_to_record != "") {
+        if (strcmp(sensor_to_record, "") != 0) {
             int found = 0;
             for (int j = 0; j < NUM_SENSORS; j++) {
                 if ((strcmp(config.sensors[j].block, block_data_map[block_count].block) == 0) && (strcmp(config.sensors[j].label, sensor_to_record)) == 0) {
@@ -191,9 +193,10 @@ int main(int argc, char *argv[]) {
         if (send_start_command_of_block(sock, &serv_addr, &config, block_count)) {
             // Process received data and save to WAV files
             // wait 100ms
-            usleep(100000);
-            DEBUG_PRINT("Start recording...\n");
-            getdata(sock, &config, block_count, sensor_to_record, duration);
+            //usleep(100000);
+            DEBUG_PRINT("Start recording for block %s...\n", block_data_map[block_count].block);
+            getdata(sock, &config, duration, block_data_map[block_count].block, sensor_to_record);
+            DEBUG_PRINT("done\n");
         }
 
         send_stop_command_of_block(sock, &serv_addr);
@@ -285,55 +288,131 @@ void read_config(const char *filename, Config *config) {
     fclose(file);
 }
 
-void getdata(int socket, Config *config, int block_count, const char *sensor_to_record, int duration) {
+void getdata(int socket, Config *config, double duration, const char *block_to_record, const char *sensor_to_record) {
     char recv_buf[DATA_SIZE];
-    int recv_len = recvfrom(socket, recv_buf, DATA_SIZE, 0, NULL, NULL);
-    short *samples = (short *)recv_buf;
-    int num_samples = recv_len / (NUM_CHANNELS * sizeof(short));
+    int recv_len;
+    short samples[NUM_CHANNELS];
+    double data_period = 1.0 / config->sampling_rate;
+    char filename[BUF_SIZE * 3];
 
     time_t t = time(NULL);
     struct tm tm = *localtime(&t);
 
     char host_name[BUF_SIZE];
     gethostname(host_name, BUF_SIZE);
+    size_t host_name_len = strlen(host_name);
 
     // set filesuffix from current time
     char filesuffix[BUF_SIZE];
     snprintf(filesuffix, sizeof(filesuffix), "%d%02d%02d%02d%02d%02d.wav", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
-
-    char filenames[NUM_CHANNELS][BUF_SIZE];
-    SNDFILE *(ft[NUM_CHANNELS]);
-
-    DEBUG_PRINT("Current time: %d-%02d-%02d %02d:%02d:%02d\n", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
-
-    int num_packets = (duration * 20000 * NUM_CHANNELS) / NUM_SAMPLES;
-    int num_samples = duration * 20000;
-
-    // Create and write headers for WAV files
-    SNDFILE *wav_files[NUM_CHANNELS];
+    size_t filesuffix_len = strlen(filesuffix);
 
     SF_INFO sfinfo;
     sfinfo.samplerate = config->sampling_rate;
     sfinfo.channels = 1;
     sfinfo.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
-    for (int i = 0; i < NUM_CHANNELS; i++) {
-        char filename[BUF_SIZE];
-        sensor_name = config->sensors[i].label;
-        snprintf(filename, sizeof(filename), "%s_%s_%s_%s_%s", host_name, config->sensors[i].label, sensor_to_record, filesuffix, config->sensors[i].label
-        
-        memset(&sfinfo[i], 0, sizeof(SF_INFO));
-        sfinfo[i].samplerate = 20000;
-        sfinfo[i].channels = 1;
-        sfinfo[i].format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
-        
-        wav_files[i] = sf_open(filename, SFM_WRITE, &sfinfo[i]);
-        if (!wav_files[i]) {
-            fprintf(stderr, "Error: %s\n", sf_strerror(wav_files[i]));
-            exit(1);
+
+    // Create and write headers for WAV files
+    SNDFILE *wav_files[NUM_SENSORS] = { NULL };
+
+    int sensor_to_record_idx = -1;
+    for (int i = 0; i < NUM_SENSORS; i++) {
+        size_t label_len = strlen(config->sensors[i].label);
+        if (strcmp(config->sensors[i].block, block_to_record) == 0) {
+            if (strcmp(sensor_to_record, "") != 0) {
+                if (strcmp(config->sensors[i].label, sensor_to_record) == 0) {
+                    sensor_to_record_idx = i;
+                    if (host_name_len + label_len + filesuffix_len + 3 < sizeof(filename)) {
+                        snprintf(filename, sizeof(filename), "%s_%s_%s", host_name, config->sensors[i].label, filesuffix);
+                    } else {
+                        // エラー処理（例: ログ出力や戻り値でエラーを通知）
+                    }
+
+                    fprintf(stderr, "creating wav file [%s] for the sensor [%s]\n", filename, config->sensors[i].label);
+                    wav_files[i] = sf_open(filename, SFM_WRITE, &sfinfo);
+                    if (!wav_files[i]) {
+                        fprintf(stderr, "Error: %s\n", sf_strerror(NULL));
+                        exit(1);
+                    }
+                    break;
+                }
+            } else { // record all sensors
+                if (host_name_len + label_len + filesuffix_len + 3 < sizeof(filename)) {
+                    snprintf(filename, sizeof(filename), "%s_%s_%s", host_name, config->sensors[i].label, filesuffix);
+                } else {
+                    fprintf(stderr, "Error: filename is too long.: ");
+                    fprintf(stderr, "%s_%s_%s", host_name, config->sensors[i].label, filesuffix);
+                    exit(1);
+                }
+                fprintf(stderr, "creating wav file [%s] for the sensor [%s]\n", filename, config->sensors[i].label);
+                wav_files[i] = sf_open(filename, SFM_WRITE, &sfinfo);
+                if (!wav_files[i]) {
+                    fprintf(stderr, "Error: %s\n", sf_strerror(NULL));
+                    exit(1);
+                }
+            }
         }
     }
 
+    if (strcmp(sensor_to_record, "") != 0 && sensor_to_record_idx == -1) {
+        fprintf(stderr, "Error: Sensor label '%s' not found in the configuration.\n", sensor_to_record);
+        exit(1);
+    }
+
+    double data_duration = 0.0;
+    int packet_number = 0;
+    int prev_packet_number = 0;
+    while (data_duration < duration) {
+        if (fabs(data_duration - duration) < EPSILON || data_duration > duration)
+            break;
+
+        recv_len = recvfrom(socket, recv_buf, DATA_SIZE, 0, NULL, NULL);
+
+        // packet連番のチェック
+        packet_number = (recv_buf[0] << 8) | recv_buf[1];
+        if (prev_packet_number == 0 && packet_number > 256) {
+            continue;
+        }
+        if (packet_number > 255 && (packet_number - prev_packet_number) > 0 && (packet_number - prev_packet_number) != 256) {
+            fprintf(stderr, "Packet Loss is observed at packet: %d\n", packet_number);
+        }
+        prev_packet_number = packet_number;
+
+        for (int byte_idx = 2; byte_idx < recv_len; byte_idx += NUM_CHANNELS * sizeof(short)) {
+            for (int channel_idx = 0; channel_idx < NUM_CHANNELS; channel_idx++) {
+                samples[channel_idx] = (recv_buf[byte_idx + channel_idx * 2] << 8) | recv_buf[byte_idx + channel_idx * 2 + 1];
+            }
+
+            if (sensor_to_record_idx != -1) {
+                sf_write_short(wav_files[sensor_to_record_idx], &samples[sensor_to_record_idx], 1);
+            } else {
+                for (int i = 0; i < NUM_SENSORS; i++) {
+                    if (strcmp(config->sensors[i].block, block_to_record) == 0) {
+                        sf_write_short(wav_files[i], &samples[i], 1);
+                    }
+                }
+            }
+            data_duration += data_period;
+            if (fabs(data_duration - duration) < EPSILON || data_duration > duration)
+                break;
+        }
+    }
+    DEBUG_PRINT("data_duration: %f\n", data_duration);
+    DEBUG_PRINT("data_period: %f\n", data_period);
+
+    for (int i = 0; i < NUM_SENSORS; i++) {
+        if (strcmp(config->sensors[i].block, block_to_record) == 0) {
+            if (sensor_to_record_idx != -1) {
+                sf_close(wav_files[sensor_to_record_idx]);
+                break;
+            } else {
+                sf_close(wav_files[i]);
+            }
+        }
+    }
 }
+
+
 
 int send_start_command_of_block(int sock, struct sockaddr_in *serv_addr, Config *config, int block_count) {
     char start_command[32];
@@ -352,7 +431,7 @@ int send_start_command_of_block(int sock, struct sockaddr_in *serv_addr, Config 
         start_command[3 + j] = 0x00;
         for (int k = 0; k < NUM_SENSORS; k++) {
             if ((strcmp(config->sensors[k].block, block_data_map[block_count].block) == 0) && (strcmp(config->sensors[k].channel, channel) == 0)) {
-                for (int m = 0; m < sizeof(gain_data_map) / sizeof(GainData); m++) {
+                for (unsigned int m = 0; m < sizeof(gain_data_map) / sizeof(GainData); m++) {
                     if (config->sensors[k].gain == gain_data_map[m].gain) {
                         start_command[3 + j] = gain_data_map[m].data;
                         break;
@@ -362,24 +441,24 @@ int send_start_command_of_block(int sock, struct sockaddr_in *serv_addr, Config 
         }
     }
 
-    int k;
-    for (int k = 0; k < 2; k++)
-        DEBUG_PRINT("start_command[%d]: %c\n", k, start_command[k]);
-    for (int k = 2; k < 7; k++)
-        DEBUG_PRINT("start_command[%d]: 0x%x\n", k, start_command[k]);
-
     // Send the start command packet with the current block and channel
     if (sendto(sock, start_command, 32, 0, (struct sockaddr *)serv_addr, addr_len) == -1)
         error_handling("fail: sendto (start_command)");
-    DEBUG_PRINT("Sent start command to afe\n");
+    DEBUG_PRINT("Sent start command to AFE: ");
+    for (int k = 0; k < 2; k++)
+        DEBUG_PRINT("%c ", start_command[k]);
+    for (int k = 2; k < 7; k++)
+        DEBUG_PRINT("0x%x ", start_command[k]);
+    DEBUG_PRINT("\n");
+
     if (recvfrom(sock, response, 32, 0, NULL, NULL) == -1)
         error_handling("fail: recvfrom (response of start_command)");
     
     if (response[0] == 'O' && response[1] == 'S' && response[2] == 0xA5) {
-        DEBUG_PRINT("Start command is accepted successfully by afe: %c %c 0x%X\n", response[0], response[1], response[2]);
+        DEBUG_PRINT("Start command is accepted successfully by AFE: %c %c 0x%X\n", response[0], response[1], response[2]);
         return 1;
     } else {
-        DEBUG_PRINT("Start command is failed: %c %c 0x%X\n", response[0], response[1], response[2]);
+        fprintf(stderr, "Start command is failed: %c %c 0x%X\n", response[0], response[1], response[2]);
         return 0;
     }
 
@@ -397,15 +476,19 @@ int send_stop_command_of_block(int sock, struct sockaddr_in *serv_addr) {
 
     if (sendto(sock, stop_command, 32, 0, (struct sockaddr *)serv_addr, addr_len) == -1)
         error_handling("fail: sendto (stop_command)");
-    DEBUG_PRINT("Sent stop command to afe\n");
-    if (recvfrom(sock, response, 32, 0, NULL, NULL) == -1)
-        error_handling("fail: recvfrom (response of stop_command)");
-    
-    if (response[0] == 'O' && response[1] == 'Q' && response[2] == 0xA5) {
-        DEBUG_PRINT("Stop command is accepted successfully by afe: %c %c 0x%X\n", response[0], response[1], response[2]);
-        return 1;
-    } else {
-        DEBUG_PRINT("Stop command is failed: %c %c 0x%X\n", response[0], response[1], response[2]);
-        return 0;
+    DEBUG_PRINT("Sent stop command to AFE\n");
+
+    int valid_response_received = 0;
+    while (!valid_response_received) {
+        if (recvfrom(sock, response, 32, 0, NULL, NULL) == -1)
+            error_handling("fail: recvfrom (response of stop_command)");
+
+        if (response[0] == 'O' && response[1] == 'Q' && response[2] == 0xA5) {
+            DEBUG_PRINT("Stop command is accepted successfully by AFE: %c %c 0x%X\n", response[0], response[1], response[2]);
+            valid_response_received = 1;
+        } else {
+            fprintf(stderr, "Invalid response received: %c %c 0x%X\n", response[0], response[1], response[2]);
+        }
     }
+    return 1;
 }
