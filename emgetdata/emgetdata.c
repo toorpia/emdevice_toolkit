@@ -75,13 +75,13 @@ int send_stop_command_of_block(int sock, struct sockaddr_in *serv_addr);
 
 
 void usage() {
-    DEBUG_PRINT("Usage: emgetdata [-f config_file] [-t duration] [-s sensor]\n");
-    DEBUG_PRINT("  -f config_file: config file path. default: config.yml\n");
-    DEBUG_PRINT("  -t duration: duration in sec. default: 10 sec.\n");
-    DEBUG_PRINT("  -s sensor: specify a sensor label to record. otherwise, all sensors are recorded.\n");
-    DEBUG_PRINT("  -h: show this help\n");
-    DEBUG_PRINT("  -v: show version\n");
-    DEBUG_PRINT("%s\n", COPYRIGHT);
+    fprintf(stderr, "Usage: emgetdata [-f config_file] [-t duration] [-s sensor]\n");
+    fprintf(stderr, "  -f config_file: config file path. default: config.yml\n");
+    fprintf(stderr, "  -t duration: duration in sec. default: 10 sec.\n");
+    fprintf(stderr, "  -s sensor: specify a sensor label to record. otherwise, all sensors are recorded.\n");
+    fprintf(stderr, "  -h: show this help\n");
+    fprintf(stderr, "  -v: show version\n");
+    fprintf(stderr, "%s\n", COPYRIGHT);
 }
 
 int main(int argc, char *argv[]) {
@@ -114,13 +114,19 @@ int main(int argc, char *argv[]) {
                 }
                 break;
             case 's':
-                sensor_to_record = optarg;
+                if (optarg != NULL) {
+                    sensor_to_record = optarg;
+                    DEBUG_PRINT("sensor to record: %s\n", sensor_to_record);
+                } else {
+                    printf("Error: Sensor argument is missing or invalid.\n");
+                    exit(1);
+                }
                 break;
             case 'h':
                 usage();
                 exit(0);
             case 'v':
-                DEBUG_PRINT("emgetdata version %s\n", VERSION);
+                fprintf(stderr, "emgetdata version %s\n", VERSION);
                 exit(0);
             default:
                 usage();
