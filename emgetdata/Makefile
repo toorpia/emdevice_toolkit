@@ -1,7 +1,7 @@
 export PATH := /usr/bin:/bin
 
 CC = gcc
-CFLAGS = -Wall -Wextra -Werror -g # -DDEBUG_MODE=1
+CFLAGS = -Wall -Wextra -Werror -g -DDEBUG_MODE=1
 LDFLAGS = -lyaml -lsndfile
 INSTALL_DIR = /usr/local/bin
 

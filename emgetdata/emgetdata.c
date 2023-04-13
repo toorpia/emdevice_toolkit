@@ -22,7 +22,7 @@
 #define DATA_SIZE 1026
 #define NUM_DATA_PER_PACKET 128 // 128 data per packet
 #define EPSILON 1.0e-9
-#define TIMEOUT_SEC 30
+#define TIMEOUT_SEC 10
 #define TIMEOUT_COUNT 3
 
 // Sensor data structure
@@ -72,10 +72,9 @@ const GainData gain_data_map[] = {
 
 void error_handling(char *message);
 void read_config(const char *filename, Config *config);
-void getdata(int sock, struct sockaddr_in *serv_addr, Config *config, double duration, const char *block_to_record, const char *sensor_to_record);
+void getdata(int sock, Config *config, double duration, const char *block_to_record, const char *sensor_to_record);
 int send_start_command_of_block(int sock, struct sockaddr_in *serv_addr, Config *config, const char *block);
 int send_stop_command_of_block(int sock, struct sockaddr_in *serv_addr);
-int socket_open(struct sockaddr_in *serv_addr, Config *config);
 
 
 void usage() {
@@ -113,7 +112,7 @@ int main(int argc, char *argv[]) {
                     duration = atof(optarg);
                     DEBUG_PRINT("duration: %f\n", duration);
                 } else {
-                    printf("Error: Duration argument is missing or invalid.\n");
+                    fprintf(stderr, "Error: Duration argument is missing or invalid.\n");
                     exit(1);
                 }
                 break;
@@ -122,7 +121,7 @@ int main(int argc, char *argv[]) {
                     sensor_to_record = optarg;
                     DEBUG_PRINT("sensor to record: %s\n", sensor_to_record);
                 } else {
-                    printf("Error: Sensor argument is missing or invalid.\n");
+                    fprintf(stderr, "Error: Sensor argument is missing or invalid.\n");
                     exit(1);
                 }
                 break;
@@ -154,7 +153,24 @@ int main(int argc, char *argv[]) {
         }
     }   
 
-    sock = socket_open(&serv_addr, &config);
+    if ((sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
+        error_handling("socket");
+    
+    // タイムアウトの設定
+    struct timeval timeout;
+    timeout.tv_sec = TIMEOUT_SEC;
+    timeout.tv_usec = 0;
+
+    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0) {
+        perror("setsockopt");
+        close(sock);
+        return 1;
+    }
+
+    memset(&serv_addr, 0, sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_addr.s_addr = inet_addr(config.afe_ip);
+    serv_addr.sin_port = htons(config.afe_port);
 
     DEBUG_PRINT("AFE IP: %s\n", config.afe_ip);
     DEBUG_PRINT("AFE Port: %d\n", config.afe_port);
@@ -178,15 +194,15 @@ int main(int argc, char *argv[]) {
         if (send_start_command_of_block(sock, &serv_addr, &config, block_data_map[block_count].block)) {
             // Process received data and save to WAV files
             // wait 100ms
-            usleep(100000);
+            //usleep(100000);
             DEBUG_PRINT("Start recording for block %s...\n", block_data_map[block_count].block);
-            getdata(sock, &serv_addr, &config, duration, block_data_map[block_count].block, sensor_to_record);
+            getdata(sock, &config, duration, block_data_map[block_count].block, sensor_to_record);
             DEBUG_PRINT("done\n");
         }
 
         send_stop_command_of_block(sock, &serv_addr);
 
-        usleep(100000);
+        //usleep(100000);
     } // end of for (int block_count = 0; block_count < NUM_BLOCKS; block_count++)
 
     close(sock);
@@ -275,7 +291,7 @@ void read_config(const char *filename, Config *config) {
     fclose(file);
 }
 
-void getdata(int sock, struct sockaddr_in *serv_addr, Config *config, double duration, const char *block_to_record, const char *sensor_to_record) {
+void getdata(int sock, Config *config, double duration, const char *block_to_record, const char *sensor_to_record) {
     uint8_t recv_buf[DATA_SIZE];
     int recv_len;
     int16_t samples[NUM_CHANNELS];
@@ -352,141 +368,47 @@ void getdata(int sock, struct sockaddr_in *serv_addr, Config *config, double dur
     int packet_number = 0;
     int prev_packet_number = 0;
 
-    // socket通信のtimeout時間を設定
-    struct timeval timeout;
-    timeout.tv_sec = TIMEOUT_SEC;
-    timeout.tv_usec = 0;
-    fd_set read_fds;
-    int max_fd = sock + 1;
-
-    // 最初の2秒間のデータを捨てる(時々非定常なデータがとれるため)
-    int timeout_count = 0;
-    double discard_duration = 2.0;
-    while (data_duration < discard_duration) {
-        FD_ZERO(&read_fds);
-        FD_SET(sock, &read_fds);
-
-        int ret = select(max_fd, &read_fds, NULL, NULL, &timeout);
-        if (ret < 0) {
-            perror("select");
-            break;
-        } else if (ret == 0) {
-            timeout_count++;
-            fprintf(stderr, "Timeout occurred. No data received for %d seconds. Restart.\n", TIMEOUT_SEC);
-            if (timeout_count >= TIMEOUT_COUNT) {
-                printf("Reached maximum timeouts. Exiting...\n");
-                break;
-            }
-            continue;
-        }
-
-        timeout_count = 0;
-
-        if (FD_ISSET(sock, &read_fds)) {
-            recv_len = recvfrom(sock, recv_buf, DATA_SIZE, 0, NULL, NULL);
-            if (recv_len < DATA_SIZE) {
-                fprintf(stderr, "Error: recvfrom() returned %d\n", recv_len);
-                perror("recvfrom");
-                break;
-            }
-
-            data_duration += data_period * 128;
-            prev_packet_number = recv_buf[0] | (recv_buf[1] <<8);
-        }
-    }
-
     // データ受信
     data_duration = 0.0;
-    timeout_count = 0;
     DEBUG_PRINT("start recording\n");
     //DEBUG_PRINT("packet_number: ");
     while (data_duration < duration) {
         if (fabs(data_duration - duration) < EPSILON || data_duration > duration)
             break;
 
-        FD_ZERO(&read_fds);
-        FD_SET(sock, &read_fds);
-
-        int ret = select(max_fd, &read_fds, NULL, NULL, &timeout);
-        if (ret < 0) {
-            perror("select");
+        recv_len = recvfrom(sock, recv_buf, DATA_SIZE, 0, NULL, NULL);
+        if (recv_len < DATA_SIZE) {
+            fprintf(stderr, "Error: recvfrom() returned %d\n", recv_len);
+            perror("recvfrom");
             break;
-        } else if (ret == 0) {
-            timeout_count++;
-            fprintf(stderr, "Timeout occurred. No data received for %d seconds. Restart.\n", TIMEOUT_SEC);
-            DEBUG_PRINT("timeout_count: %d, TIMEOUT_COUNT: %d\n", timeout_count, TIMEOUT_COUNT);
-            if (timeout_count >= TIMEOUT_COUNT) {
-                printf("Reached maximum timeouts. Exiting...\n");
-                for (int i = 0; i < NUM_SENSORS; i++) {
-                    if (wav_files[i]) {
-                        sf_close(wav_files[i]);
-                    }
-                }
-                return;
-            }
-
-            close(sock);
-            sock = socket_open(serv_addr, config);
-
-            usleep(100000);
-            send_stop_command_of_block(sock, serv_addr);
-            usleep(100000);
-            send_start_command_of_block(sock, serv_addr, config, block_to_record);
-            usleep(100000);
-
-            data_duration = 0.0;
-
-            // wavファイルを最初から作り直す
-            for (int i = 0; i < NUM_SENSORS; i++) {
-                if (wav_files[i]) {
-                    sf_close(wav_files[i]);
-                    wav_files[i] = sf_open(filenames[i], SFM_WRITE, &sfinfo);
-                    if (!wav_files[i]) {
-                        fprintf(stderr, "Error: %s\n", sf_strerror(NULL));
-                        exit(1);
-                    }
-                }
-            }
-            continue;
         }
 
-        timeout_count = 0;
+        // packet連番のチェック
+        packet_number = recv_buf[0] | (recv_buf[1] <<8);
+        if ((packet_number - prev_packet_number) > 1) {
+            fprintf(stderr, "Packet Loss is observed at packet: %d\n", packet_number);
+        }
+        prev_packet_number = packet_number;
 
-        if (FD_ISSET(sock, &read_fds)) {
-            recv_len = recvfrom(sock, recv_buf, DATA_SIZE, 0, NULL, NULL);
-            if (recv_len < DATA_SIZE) {
-                fprintf(stderr, "Error: recvfrom() returned %d\n", recv_len);
-                perror("recvfrom");
-                break;
+        for (int byte_idx = 2; byte_idx < recv_len; byte_idx += NUM_CHANNELS * sizeof(short)) {
+            for (int channel_idx = 0; channel_idx < NUM_CHANNELS; channel_idx++) {
+                samples[channel_idx] = (int16_t)(recv_buf[byte_idx + channel_idx * 2] | (recv_buf[byte_idx + channel_idx * 2 + 1] << 8));
+                samples[channel_idx] -= 0x7FFF;
             }
 
-            // packet連番のチェック
-            packet_number = recv_buf[0] | (recv_buf[1] <<8);
-            if ((packet_number - prev_packet_number) > 1) {
-                fprintf(stderr, "Packet Loss is observed at packet: %d\n", packet_number);
-            }
-            prev_packet_number = packet_number;
-
-            for (int byte_idx = 2; byte_idx < recv_len; byte_idx += NUM_CHANNELS * sizeof(short)) {
-                for (int channel_idx = 0; channel_idx < NUM_CHANNELS; channel_idx++) {
-                    samples[channel_idx] = (int16_t)(recv_buf[byte_idx + channel_idx * 2] | (recv_buf[byte_idx + channel_idx * 2 + 1] << 8));
-                    samples[channel_idx] -= 0x7FFF;
-                }
-
-                if (sensor_to_record_idx != -1) {
-                    sf_write_short(wav_files[sensor_to_record_idx], &samples[sensor_to_record_idx], 1);
-                } else {
-                    for (int i = 0; i < NUM_SENSORS; i++) {
-                        if (strcmp(config->sensors[i].block, block_to_record) == 0) {
-                            sf_write_short(wav_files[i], &samples[i], 1);
-                        }
+            if (sensor_to_record_idx != -1) {
+                sf_write_short(wav_files[sensor_to_record_idx], &samples[sensor_to_record_idx], 1);
+            } else {
+                for (int i = 0; i < NUM_SENSORS; i++) {
+                    if (strcmp(config->sensors[i].block, block_to_record) == 0) {
+                        sf_write_short(wav_files[i], &samples[i], 1);
                     }
                 }
-                data_duration += data_period;
-                if (fabs(data_duration - duration) < EPSILON || data_duration > duration)
-                    break;
             }
-        } // end of if (FD_ISSET(sock, &read_fds))
+            data_duration += data_period;
+            if (fabs(data_duration - duration) < EPSILON || data_duration > duration)
+                break;
+        }
     }
     DEBUG_PRINT("data_duration: %f\n", data_duration);
     DEBUG_PRINT("data_period: %f\n", data_period);
@@ -548,46 +470,15 @@ int send_start_command_of_block(int sock, struct sockaddr_in *serv_addr, Config 
         DEBUG_PRINT("0x%x ", start_command[k]);
     DEBUG_PRINT("\n");
 
-    // socket通信のtimeout時間を設定
-    struct timeval timeout;
-    timeout.tv_sec = TIMEOUT_SEC;
-    timeout.tv_usec = 0;
-    fd_set read_fds;
-    int max_fd = sock + 1;
-
-    int timeout_count = 0;
-    while (1) {
-        FD_ZERO(&read_fds);
-        FD_SET(sock, &read_fds);
-
-        int ret = select(max_fd, &read_fds, NULL, NULL, &timeout);
-        if (ret < 0) {
-            perror("select");
-            break;
-        } else if (ret == 0) {
-            timeout_count++;
-            fprintf(stderr, "Timeout occurred. No data received for %d seconds. Restart.\n", TIMEOUT_SEC);
-            if (timeout_count >= TIMEOUT_COUNT) {
-                printf("Reached maximum timeouts. Exiting...\n");
-                break;
-            }
-            continue;
-        }
-
-        timeout_count = 0;
-
-        if (FD_ISSET(sock, &read_fds)) {
-            if (recvfrom(sock, response, 32, 0, NULL, NULL) == -1)
-                error_handling("fail: recvfrom (response of start_command)");
-            
-            if (response[0] == 'O' && response[1] == 'S' && response[2] == 0xA5) {
-                DEBUG_PRINT("Start command is accepted successfully by AFE: %c %c 0x%X\n", response[0], response[1], response[2]);
-                return 1;
-            } else {
-                fprintf(stderr, "Start command is failed: %c %c 0x%X\n", response[0], response[1], response[2]);
-                return 0;
-            }
-        }
+    if (recvfrom(sock, response, 32, 0, NULL, NULL) == -1)
+        error_handling("fail: recvfrom (response of start_command)");
+    
+    if (response[0] == 'O' && response[1] == 'S' && response[2] == 0xA5) {
+        DEBUG_PRINT("Start command is accepted successfully by AFE: %c %c 0x%X\n", response[0], response[1], response[2]);
+        return 1;
+    } else {
+        fprintf(stderr, "Start command is failed: %c %c 0x%X\n", response[0], response[1], response[2]);
+        return 0;
     }
     return 0;
 }
@@ -606,62 +497,17 @@ int send_stop_command_of_block(int sock, struct sockaddr_in *serv_addr) {
         error_handling("fail: sendto (stop_command)");
     DEBUG_PRINT("Sent stop command to AFE\n");
 
-    // socket通信のtimeout時間を設定
-    struct timeval timeout;
-    timeout.tv_sec = TIMEOUT_SEC;
-    timeout.tv_usec = 0;
-    fd_set read_fds;
-    int max_fd = sock + 1;
+    int valid_response_received = 0;
+    while (!valid_response_received) {
+        if (recvfrom(sock, response, 32, 0, NULL, NULL) == -1)
+            error_handling("fail: recvfrom (response of stop_command)");
 
-    int timeout_count = 0;
-    while (1) {
-        FD_ZERO(&read_fds);
-        FD_SET(sock, &read_fds);
-
-        int ret = select(max_fd, &read_fds, NULL, NULL, &timeout);
-        if (ret < 0) {
-            perror("select");
-            break;
-        } else if (ret == 0) {
-            timeout_count++;
-            fprintf(stderr, "Timeout occurred. No data received for %d seconds. Restart.\n", TIMEOUT_SEC);
-            if (timeout_count >= TIMEOUT_COUNT) {
-                printf("Reached maximum timeouts. Exiting...\n");
-                break;
-            }
-            continue;
-        }
-
-        timeout_count = 0;
-
-        if (FD_ISSET(sock, &read_fds)) {
-            int valid_response_received = 0;
-            while (!valid_response_received) {
-                if (recvfrom(sock, response, 32, 0, NULL, NULL) == -1)
-                    error_handling("fail: recvfrom (response of stop_command)");
-
-                if (response[0] == 'O' && response[1] == 'Q' && response[2] == 0xA5) {
-                    DEBUG_PRINT("Stop command is accepted successfully by AFE: %c %c 0x%X\n", response[0], response[1], response[2]);
-                    valid_response_received = 1;
-                } else {
-                    //fprintf(stderr, "Invalid response received: %c %c 0x%X\n", response[0], response[1], response[2]);
-                }
-            }
-            return 1;
+        if (response[0] == 'O' && response[1] == 'Q' && response[2] == 0xA5) {
+            DEBUG_PRINT("Stop command is accepted successfully by AFE: %c %c 0x%X\n", response[0], response[1], response[2]);
+            valid_response_received = 1;
+        } else {
+            //fprintf(stderr, "Invalid response received: %c %c 0x%X\n", response[0], response[1], response[2]);
         }
     }
-    return 0;
-}
-
-int socket_open(struct sockaddr_in *serv_addr, Config *config) {
-    int sock;
-    if ((sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
-        error_handling("socket");
-    
-    memset(serv_addr, 0, sizeof(*serv_addr));
-    serv_addr->sin_family = AF_INET;
-    serv_addr->sin_addr.s_addr = inet_addr(config->afe_ip);
-    serv_addr->sin_port = htons(config->afe_port);
-
-    return sock;
+    return 1;
 }

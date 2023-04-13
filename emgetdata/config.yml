@@ -1,4 +1,4 @@
-afe_ip: 192.168.2.12
+afe_ip: 192.168.3.12
 afe_port: 50000
 sensors: # sensor name, block: A-E, channel: 1-4, gain: 0, 1, 2, 5, 10, 20, 50, 100
   - {label: "S01", block: "A", channel: "1", gain: 1}
