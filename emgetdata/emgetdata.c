@@ -594,7 +594,7 @@ int check_response(int sock, char *command) {
             }
         }
 
-        if (response[0] == command[0] && response[1] == command[1] && response[2] == 0xA5) {
+        if (response[0] == command[0] && response[1] == command[1] && response[2] == (char)0xA5) {
             DEBUG_PRINT("Command is accepted successfully by AFE: %c %c 0x%X\n", response[0], response[1], response[2]);
             return 1;
         } else {

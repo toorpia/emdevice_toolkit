@@ -4,6 +4,9 @@ CC = gcc
 CFLAGS = -Wall -Wextra -Werror -g -DDEBUG_MODE=1
 LDFLAGS = -lyaml -lsndfile
 INSTALL_DIR = /usr/local/bin
+# for macos
+#CFLAGS += -I/opt/homebrew/include
+#LDFLAGS += -L/opt/homebrew/lib
 
 SRCS = emgetdata.c debug.h
 OBJS = emgetdata.o
