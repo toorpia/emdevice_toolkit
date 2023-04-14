@@ -1,5 +1,5 @@
 #define VERSION "0.1.0"
-#define COPYRIGHT "Copyright (C) 2023 Tokuyama Coooration, Easy Mejor Inc., and toor Inc. All rights reserved."
+#define COPYRIGHT "Copyright (C) 2023 Tokuyama Coooration, Easy Measure Inc., and toor Inc. All rights reserved."
 
 #include <stdio.h>
 #include <stdlib.h>

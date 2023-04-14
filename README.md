@@ -1,12 +1,12 @@
 # emdevice_toolkit
-toolkit for the EasyMajor's device
+toolkit for the EasyMeasure's device
 
 ## 1. Introduction
 
-This toolkit is used to manage the EasyMajor's device.
+This toolkit is used to manage the EasyMeasure's device.
 It can be used to manage the device's sensor configurations and get the sensor data based on the configurations.
 
-This toolkit is based on the EasyMajor's device's API.
+This toolkit is based on the EasyMeasure's device's API.
 
 ## 2. Installation
 
