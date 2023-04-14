@@ -24,7 +24,9 @@
 #define DATA_SIZE 1026
 #define NUM_DATA_PER_PACKET 128 // 128 data per packet
 #define EPSILON 1.0e-9
-#define TIMEOUT_USEC 100000 // 100 msec
+#define TIMEOUT_SEC 1
+#define TIMEOUT_USEC 500000 // 1500 msec
+//#define TIMEOUT_USEC 100000 // 100 msec
 
 // Sensor data structure
 typedef struct {
@@ -196,6 +198,7 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Error: send_start_command_of_block() failed.\n");
             exit(1);
         }
+        usleep(1000000);
 
         // データ取得
         DEBUG_PRINT("Start recording for block %s...\n", block_data_map[block_count].block);
@@ -208,9 +211,6 @@ int main(int argc, char *argv[]) {
             }
             fprintf(stderr, "Error: getdata() failed. Retry...\n");
 
-            // バッファのクリア
-            clear_remaining_buffer(sock);
-
             // 計測終了コマンドの送信
             if (send_stop_command_of_block(sock, &serv_addr) < 0) {
                 fprintf(stderr, "Error: send_stop_command_of_block() failed.\n");
@@ -219,7 +219,6 @@ int main(int argc, char *argv[]) {
 
             goto retry;
         }
-        clear_remaining_buffer(sock);
         DEBUG_PRINT("done\n");
 
         // 計測終了コマンドの送信
@@ -227,6 +226,7 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Error: send_stop_command_of_block() failed.\n");
             exit(1);
         }
+        usleep(1000000);
     } // end of for (int block_count = 0; block_count < NUM_BLOCKS; block_count++)
 
     close(sock);
@@ -491,6 +491,8 @@ int send_start_command_of_block(int sock, struct sockaddr_in *serv_addr, Config 
     char channel[BUF_SIZE];
     socklen_t addr_len = sizeof(struct sockaddr_in);
 
+    clear_remaining_buffer(sock);
+
     // start command packet
     start_command[0] = 'O';
     start_command[1] = 'S';
@@ -547,6 +549,8 @@ int send_stop_command_of_block(int sock, struct sockaddr_in *serv_addr) {
     char stop_command[32];
     socklen_t addr_len = sizeof(struct sockaddr_in);
 
+    clear_remaining_buffer(sock);
+
     // Prepare stop command packet
     stop_command[0] = 'O';
     stop_command[1] = 'Q';
@@ -562,7 +566,7 @@ int send_stop_command_of_block(int sock, struct sockaddr_in *serv_addr) {
     if (check_response(sock, stop_command) < 0) {
         retry_count++;
         if (retry_count > retry_max) {
-            fprintf(stderr, "Error: Failed to send start command to AFE\n");
+            fprintf(stderr, "Error: Failed to send stop command to AFE\n");
             return -1;
         }
         goto retry_stop_command;
@@ -594,7 +598,7 @@ int check_response(int sock, char *command) {
             DEBUG_PRINT("Command is accepted successfully by AFE: %c %c 0x%X\n", response[0], response[1], response[2]);
             return 1;
         } else {
-            fprintf(stderr, "Command is failed: %c %c 0x%X\n", response[0], response[1], response[2]);
+            fprintf(stderr, "Command is not accepted yet: %c %c 0x%X\n", response[0], response[1], response[2]);
             return -1;
         }
     }
@@ -622,7 +626,7 @@ void clear_remaining_buffer(int sock) {
 // set timeout
 void set_timeout(int sock) {
     struct timeval timeout;
-    timeout.tv_sec = 0;
+    timeout.tv_sec = TIMEOUT_SEC;
     timeout.tv_usec = TIMEOUT_USEC;
 
     if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
