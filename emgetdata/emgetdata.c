@@ -73,7 +73,7 @@ const GainData gain_data_map[] = {
     {100, 0x07},
 };
 
-void error_handling(char *message);
+void error_handling(char *message, int sock, struct sockaddr_in *serv_addr);
 void read_config(const char *filename, Config *config);
 int getdata(int sock, Config *config, double duration, const char *block_to_record, const char *sensor_to_record);
 int send_start_command_of_block(int sock, struct sockaddr_in *serv_addr, Config *config, const char *block);
@@ -155,12 +155,14 @@ int main(int argc, char *argv[]) {
         }
         if (found == 0) {
             // センサーが見つからない場合は終了
-            error_handling("Sensor not found in config file.");
+            fputs("Sensor not found in config file.", stderr);
+            fputc('\n', stderr);
+            exit(1);
         }
     }   
 
     if ((sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
-        error_handling("socket");
+        error_handling("socket", sock, &serv_addr);
     
     // タイムアウトの設定
     set_timeout(sock);
@@ -233,7 +235,12 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-void error_handling(char *message) {
+void error_handling(char *message, int sock, struct sockaddr_in *serv_addr) {
+    // If the socket and serv_addr are valid, send stop command
+    if (sock >= 0 && serv_addr != NULL) {
+        send_stop_command_of_block(sock, serv_addr);
+    }
+
     fputs(message, stderr);
     fputc('\n', stderr);
     exit(1);
@@ -525,7 +532,7 @@ int send_start_command_of_block(int sock, struct sockaddr_in *serv_addr, Config 
     retry_start_command:
     // Send the start command packet with the current block and channel
     if (sendto(sock, start_command, 32, 0, (struct sockaddr *)serv_addr, addr_len) == -1)
-        error_handling("fail: sendto (start_command)");
+        error_handling("fail: sendto (start_command)", sock, serv_addr);
 
     DEBUG_PRINT("Sent start command to AFE: ");
     for (int k = 0; k < 2; k++)
@@ -559,8 +566,11 @@ int send_stop_command_of_block(int sock, struct sockaddr_in *serv_addr) {
     int retry_count = 0;
     int retry_max = 3;
     retry_stop_command:
-    if (sendto(sock, stop_command, 32, 0, (struct sockaddr *)serv_addr, addr_len) == -1)
-        error_handling("fail: sendto (stop_command)");
+    if (sendto(sock, stop_command, 32, 0, (struct sockaddr *)serv_addr, addr_len) == -1) {
+        fputs("fail: sendto (stop_command)", stderr);
+        fputc('\n', stderr);
+        exit(1);
+    }
     DEBUG_PRINT("Sent stop command to AFE\n");
 
     if (check_response(sock, stop_command) < 0) {
@@ -608,6 +618,11 @@ int check_response(int sock, char *command) {
 void clear_remaining_buffer(int sock) {
     // change socket to non-blocking
     int flags = fcntl(sock, F_GETFL, 0);
+    if (flags == -1) {
+        perror("fcntl (F_GETFL)");
+        exit(1);
+    }
+
     fcntl(sock, F_SETFL, flags | O_NONBLOCK);
 
     // clear remaining buffer
@@ -617,6 +632,10 @@ void clear_remaining_buffer(int sock) {
 
     // change socket back to blocking
     flags = fcntl(sock, F_GETFL, 0);
+    if (flags == -1) {
+        perror("fcntl (F_GETFL)");
+        exit(1);
+    }
     fcntl(sock, F_SETFL, flags & ~O_NONBLOCK);
 
     // set timeout
