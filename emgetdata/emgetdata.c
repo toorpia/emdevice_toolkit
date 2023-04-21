@@ -1,5 +1,5 @@
 #define VERSION "0.1.0"
-#define COPYRIGHT "Copyright (C) 2023 Tokuyama Coooration, Easy Measure Inc., and toor Inc. All rights reserved."
+#define COPYRIGHT "Copyright (C) 2023 Tokuyama Coorporation, Easy Measure Inc., and toor Inc. All rights reserved."
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,10 +23,9 @@
 #define NUM_SENSORS 20
 #define DATA_SIZE 1026
 #define NUM_DATA_PER_PACKET 128 // 128 data per packet
-#define EPSILON 1.0e-9
 #define TIMEOUT_SEC 1
-#define TIMEOUT_USEC 500000 // 1500 msec
-//#define TIMEOUT_USEC 100000 // 100 msec
+#define TIMEOUT_USEC 500000 // total timeout length: 1500 msec
+#define EPSILON 1.0e-9
 
 // Sensor data structure
 typedef struct {
@@ -355,6 +354,7 @@ int getdata(int sock, Config *config, double duration, const char *block_to_reco
     for (int i = 0; i < NUM_SENSORS; i++) {
         size_t label_len = strlen(config->sensors[i].label);
         if (strcmp(config->sensors[i].block, block_to_record) == 0) {
+            // sensor_to_recordが指定されている場合は、そのセンサーのみwavファイルを作成する
             if (strcmp(sensor_to_record, "") != 0) {
                 if (strcmp(config->sensors[i].label, sensor_to_record) == 0) {
                     sensor_to_record_idx = i;
