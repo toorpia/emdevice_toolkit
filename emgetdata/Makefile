@@ -1,8 +1,8 @@
 export PATH := /usr/bin:/bin
 
 CC = gcc
-CFLAGS = -Wall -Wextra -Werror -g -DDEBUG_MODE=1 -fopenmp
-LDFLAGS = -lyaml -lsndfile /usr/local/lib/libkissfft-int16_t-openmp.a -lm
+CFLAGS = -Wall -Wextra -Werror -g -DDEBUG_MODE=1
+LDFLAGS = -lyaml -lsndfile -lm
 INSTALL_DIR = /usr/local/bin
 # for macos
 #CFLAGS += -I/opt/homebrew/include
