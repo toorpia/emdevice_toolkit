@@ -26,6 +26,7 @@
 #define TIMEOUT_SEC 1
 #define TIMEOUT_USEC 500000 // total timeout length: 1500 msec
 #define EPSILON 1.0e-9
+#define SAMPLING_RATE 20000 // Sampling Rate of AFE
 
 // Sensor data structure
 typedef struct {
@@ -80,7 +81,10 @@ int send_stop_command_of_block(int sock, struct sockaddr_in *serv_addr);
 void clear_remaining_buffer(int sock);
 void set_timeout(int sock);
 int check_response(int sock, char *command);
-
+int16_t** create_data_buffer(double duration, int sampling_rate);
+void free_data_buffer(int16_t** data_buffer);
+void downsample(int16_t *original_data, int16_t *reduced_data, int reduced_length, int original_rate, int new_rate);
+void write_wav_files(SNDFILE **wav_files, int16_t **data_buffer, int data_idx, int sensor_to_record_idx, const char *block_to_record, Config *config, int *channel_of_sensor);
 
 void usage() {
     fprintf(stderr, "Usage: emgetdata [-f config_file] [-t duration] [-s sensor]\n");
@@ -324,8 +328,7 @@ void read_config(const char *filename, Config *config) {
 int getdata(int sock, Config *config, double duration, const char *block_to_record, const char *sensor_to_record) {
     uint8_t recv_buf[DATA_SIZE];
     int recv_len;
-    int16_t samples[NUM_CHANNELS];
-    double data_period = 1.0 / config->sampling_rate;
+    double data_period = 1.0 / SAMPLING_RATE;
 
     time_t t = time(NULL);
     struct tm tm = *localtime(&t);
@@ -350,10 +353,16 @@ int getdata(int sock, Config *config, double duration, const char *block_to_reco
     // filenameを格納する配列を生成
     char filenames[NUM_SENSORS][BUF_SIZE * 3] = { "" };
 
+    // sensor番号とblockにおけるchannel番号との対応を格納する配列を生成
+    int channel_of_sensor[NUM_SENSORS] = { -1 };
+    int channel_idx = 0; // 0, 1, 2, 3
+
     int sensor_to_record_idx = -1;
     for (int i = 0; i < NUM_SENSORS; i++) {
         size_t label_len = strlen(config->sensors[i].label);
         if (strcmp(config->sensors[i].block, block_to_record) == 0) {
+            channel_of_sensor[i] = channel_idx;
+            channel_idx++;
             // sensor_to_recordが指定されている場合は、そのセンサーのみwavファイルを作成する
             if (strcmp(sensor_to_record, "") != 0) {
                 if (strcmp(config->sensors[i].label, sensor_to_record) == 0) {
@@ -399,8 +408,12 @@ int getdata(int sock, Config *config, double duration, const char *block_to_reco
     int packet_number = 0;
     int prev_packet_number = 0;
 
+    // データ受信用のdata_buffer[NUM_CHANNEL][配列を初期化
+    int16_t **data_buffer = create_data_buffer(duration, SAMPLING_RATE); // AFEのサンプリングレートは20kHz固定なので、まずはそれを受信して、後でconfig->sampling_rateへdownsampleする
+
     // データ受信
     data_duration = 0.0;
+    int data_idx = 0;
     DEBUG_PRINT("start recording\n");
     //DEBUG_PRINT("packet_number: ");
     while (data_duration < duration) {
@@ -413,29 +426,18 @@ int getdata(int sock, Config *config, double duration, const char *block_to_reco
                 // Timeout occurred, continue with next iteration
                 printf("Timeout, no data received\n");
 
-                // close files
-                for (int i = 0; i < NUM_SENSORS; i++) {
-                    if (strcmp(config->sensors[i].block, block_to_record) == 0) {
-                        if (sensor_to_record_idx != -1) {
-                            sf_close(wav_files[sensor_to_record_idx]);
-                            break;
-                        } else {
+                // close & remove files
+                if (sensor_to_record_idx != -1) {
+                    sf_close(wav_files[sensor_to_record_idx]);
+                    remove(filenames[sensor_to_record_idx]);
+                } else {
+                    for (int i = 0; i < NUM_SENSORS; i++) {
+                        if (strcmp(config->sensors[i].block, block_to_record) == 0) {
                             sf_close(wav_files[i]);
-                        }
-                    }
-                }
-                // delete files
-                for (int i = 0; i < NUM_SENSORS; i++) {
-                    if (strcmp(config->sensors[i].block, block_to_record) == 0) {
-                        if (sensor_to_record_idx != -1) {
-                            remove(filenames[sensor_to_record_idx]);
-                            break;
-                        } else {
                             remove(filenames[i]);
                         }
                     }
                 }
-
                 return -1; // -1で返すことによって、呼び出し位置(main関数内)でretryする
             } else {
                 perror("recvfrom");
@@ -458,40 +460,61 @@ int getdata(int sock, Config *config, double duration, const char *block_to_reco
 
         for (int byte_idx = 2; byte_idx < recv_len; byte_idx += NUM_CHANNELS * sizeof(short)) {
             for (int channel_idx = 0; channel_idx < NUM_CHANNELS; channel_idx++) {
-                samples[channel_idx] = (int16_t)(recv_buf[byte_idx + channel_idx * 2] | (recv_buf[byte_idx + channel_idx * 2 + 1] << 8));
-                samples[channel_idx] -= 0x7FFF;
+                data_buffer[channel_idx][data_idx] = (int16_t)(recv_buf[byte_idx + channel_idx * 2] | (recv_buf[byte_idx + channel_idx * 2 + 1] << 8));
+                data_buffer[channel_idx][data_idx] -= 0x7FFF;
             }
-
-            if (sensor_to_record_idx != -1) {
-                sf_write_short(wav_files[sensor_to_record_idx], &samples[sensor_to_record_idx], 1);
-            } else {
-                for (int i = 0; i < NUM_SENSORS; i++) {
-                    if (strcmp(config->sensors[i].block, block_to_record) == 0) {
-                        sf_write_short(wav_files[i], &samples[i], 1);
-                    }
-                }
-            }
+            data_idx += 1;
             data_duration += data_period;
             if (fabs(data_duration - duration) < EPSILON || data_duration > duration)
                 break;
         }
     }
     DEBUG_PRINT("data_duration: %f\n", data_duration);
-    DEBUG_PRINT("data_period: %f\n", data_period);
+    DEBUG_PRINT("data_idx: %d\n", data_idx);
+    DEBUG_PRINT("duration_in_samples: %d\n", (int)(duration * SAMPLING_RATE));
 
-    for (int i = 0; i < NUM_SENSORS; i++) {
-        if (strcmp(config->sensors[i].block, block_to_record) == 0) {
-            if (sensor_to_record_idx != -1) {
-                sf_close(wav_files[sensor_to_record_idx]);
-                break;
-            } else {
-                sf_close(wav_files[i]);
-            }
+    if (config->sampling_rate < SAMPLING_RATE) {
+        DEBUG_PRINT("downsampling from 20kHz to %dHz\n", config->sampling_rate);
+        // AFEで20kHzで取得されたデータを config->sampling_rate にdownsample する
+        int reduced_length = (data_idx * config->sampling_rate) / SAMPLING_RATE;
+        int16_t** reduced_data_buffer = malloc(NUM_CHANNELS * sizeof(int16_t*));
+        for (int i = 0; i < NUM_CHANNELS; i++) {
+            reduced_data_buffer[i] = calloc(reduced_length, sizeof(int16_t));
+            downsample(data_buffer[i], reduced_data_buffer[i], reduced_length, SAMPLING_RATE, config->sampling_rate);
         }
+        write_wav_files(wav_files, reduced_data_buffer, reduced_length, sensor_to_record_idx, block_to_record, config, channel_of_sensor);
+        free_data_buffer(reduced_data_buffer);
+    } else {
+        // AFEで20kHzで取得されたデータをそのまま書き込む
+        write_wav_files(wav_files, data_buffer, data_idx, sensor_to_record_idx, block_to_record, config, channel_of_sensor);
     }
+
+    free_data_buffer(data_buffer);
+
     return 0;
 }
 
+void write_wav_files(SNDFILE **wav_files, int16_t **data_buffer, int data_idx, int sensor_to_record_idx, const char *block_to_record, Config *config, int *channel_of_sensor) {
+    if (sensor_to_record_idx != -1) { // write specified sensor
+        if (sf_write_short(wav_files[sensor_to_record_idx], data_buffer[channel_of_sensor[sensor_to_record_idx]], data_idx) != data_idx) {
+            fprintf(stderr, "Error: sf_write_short() failed\n");
+            exit(1);
+        }
+        sf_write_sync(wav_files[sensor_to_record_idx]);
+        sf_close(wav_files[sensor_to_record_idx]);
+    } else { // write all sensors
+        for (int i = 0; i < NUM_SENSORS; i++) {
+            if (strcmp(config->sensors[i].block, block_to_record) == 0) {
+                if (sf_write_short(wav_files[i], data_buffer[channel_of_sensor[i]], data_idx) != data_idx) {
+                    fprintf(stderr, "Error: sf_write_short() failed\n");
+                    exit(1);
+                }
+                sf_write_sync(wav_files[i]);
+                sf_close(wav_files[i]);
+            }
+        } // for (int i = 0; i < NUM_SENSORS; i++)
+    }
+}
 
 int send_start_command_of_block(int sock, struct sockaddr_in *serv_addr, Config *config, const char *block) {
     char start_command[32];
@@ -651,5 +674,36 @@ void set_timeout(int sock) {
     if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
         perror("setsockopt");
         exit(1);
+    }
+}
+
+int16_t** create_data_buffer(double duration, int sampling_rate) {
+    int duration_in_samples = (int)(duration * sampling_rate);
+    int16_t** data_buffer = malloc(NUM_CHANNELS * sizeof(int16_t*));
+    for (int i = 0; i < NUM_CHANNELS; i++) {
+        data_buffer[i] = calloc(duration_in_samples, sizeof(int16_t));
+    }
+    return data_buffer;
+}
+
+void free_data_buffer(int16_t** data_buffer) {
+    for (int i = 0; i < NUM_CHANNELS; i++) {
+        free(data_buffer[i]);
+    }
+    free(data_buffer);
+}
+
+void downsample(int16_t *original_data, int16_t *reduced_data, int reduced_length, int original_rate, int new_rate) {
+    int gcd = 1;
+    for (int i = 1; i <= original_rate && i <= new_rate; ++i) {
+        if (original_rate % i == 0 && new_rate % i == 0) {
+            gcd = i;
+        }
+    }
+
+    int step = original_rate / gcd;
+    for (int i = 0; i < reduced_length; i++) {
+        int index = i * step;
+        reduced_data[i] = original_data[index];
     }
 }
