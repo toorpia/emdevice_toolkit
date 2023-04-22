@@ -15,6 +15,7 @@
 #include <sys/select.h>
 #include <errno.h>
 #include <fcntl.h>
+#include "kissfft/kiss_fftr.h"
 #include "debug.h"
 
 #define BUF_SIZE 1024
@@ -693,17 +694,38 @@ void free_data_buffer(int16_t** data_buffer) {
     free(data_buffer);
 }
 
-void downsample(int16_t *original_data, int16_t *reduced_data, int reduced_length, int original_rate, int new_rate) {
-    int gcd = 1;
-    for (int i = 1; i <= original_rate && i <= new_rate; ++i) {
-        if (original_rate % i == 0 && new_rate % i == 0) {
-            gcd = i;
-        }
+void downsample(int16_t *original_data, int16_t *reduced_data, int data_length, int original_rate, int new_rate) {
+    int downsample_factor = original_rate / new_rate;
+
+    // Convert the original_data to float array
+    kiss_fft_scalar *float_data = (kiss_fft_scalar *)malloc(data_length * sizeof(kiss_fft_scalar));
+    for (int i = 0; i < data_length; i++) {
+        float_data[i] = (kiss_fft_scalar)original_data[i];
     }
 
-    int step = original_rate / gcd;
-    for (int i = 0; i < reduced_length; i++) {
-        int index = i * step;
-        reduced_data[i] = original_data[index];
+    kiss_fftr_cfg fft_cfg = kiss_fftr_alloc(data_length, 0, NULL, NULL);
+    kiss_fftr_cfg ifft_cfg = kiss_fftr_alloc(data_length / downsample_factor, 1, NULL, NULL);
+
+    int freq_data_size = data_length / 2 + 1;
+    int downsampled_freq_data_size = data_length / 2 / downsample_factor + 1;
+    kiss_fft_cpx *freq_data = (kiss_fft_cpx *)malloc(freq_data_size * sizeof(kiss_fft_cpx));
+    kiss_fft_cpx *downsampled_freq_data = (kiss_fft_cpx *)malloc(freq_data_size * sizeof(kiss_fft_cpx));
+
+    kiss_fftr(fft_cfg, float_data, freq_data);
+
+    // Keep only the lower half of the spectrum (lowpass filter)
+    memcpy(downsampled_freq_data, freq_data, downsampled_freq_data_size * sizeof(kiss_fft_cpx));
+    memcpy(downsampled_freq_data + downsampled_freq_data_size, freq_data + downsampled_freq_data_size, (freq_data_size - downsampled_freq_data_size) * sizeof(kiss_fft_cpx));
+
+    kiss_fftri(ifft_cfg, downsampled_freq_data, float_data);
+
+    for (int i = 0; i < data_length / downsample_factor; i++) {
+        reduced_data[i] = (int16_t)(float_data[i] / downsample_factor);
     }
+
+    kiss_fft_free(fft_cfg);
+    kiss_fft_free(ifft_cfg);
+    free(freq_data);
+    free(downsampled_freq_data);
+    free(float_data);
 }
