@@ -476,7 +476,8 @@ int getdata(int sock, Config *config, double duration, const char *block_to_reco
     if (config->sampling_rate < SAMPLING_RATE) {
         DEBUG_PRINT("downsampling from 20kHz to %dHz\n", config->sampling_rate);
         // AFEで20kHzで取得されたデータを config->sampling_rate にdownsample する
-        int reduced_length = (data_idx * config->sampling_rate) / SAMPLING_RATE;
+        int reduced_length = (int)ceil((double)data_idx * config->sampling_rate / SAMPLING_RATE);
+        DEBUG_PRINT("reduced_length: %d\n", reduced_length);
         int16_t** reduced_data_buffer = malloc(NUM_CHANNELS * sizeof(int16_t*));
         for (int i = 0; i < NUM_CHANNELS; i++) {
             reduced_data_buffer[i] = calloc(reduced_length, sizeof(int16_t));
