@@ -404,16 +404,79 @@ int getdata(int sock, Config *config, double duration, const char *block_to_reco
         exit(1);
     }
 
+    // n秒間の空データ取得
+    double ignore_second = 1.0;
     double data_duration = 0.0;
+    int data_idx = 0;
     int packet_number = 0;
     int prev_packet_number = 0;
 
     // データ受信用のdata_buffer[NUM_CHANNEL][配列を初期化
-    int16_t **data_buffer = create_data_buffer(duration, SAMPLING_RATE); // AFEのサンプリングレートは20kHz固定なので、まずはそれを受信して、後でconfig->sampling_rateへdownsampleする
+    int16_t **dummy_data_buffer = create_data_buffer(ignore_second, SAMPLING_RATE); // AFEのサンプリングレートは20kHz固定なので、まずはそれを受信して、後でconfig->sampling_rateへdownsampleする
+
+    // Ignore data for the first n second
+    data_duration = 0.0;
+    DEBUG_PRINT("start discarding\n");
+    while (data_duration < ignore_second) {
+        recv_len = recvfrom(sock, recv_buf, DATA_SIZE, 0, NULL, NULL);
+        if (recv_len < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Timeout occurred, continue with next iteration
+                printf("Timeout, no data received\n");
+
+                // close & remove files
+                if (sensor_to_record_idx != -1) {
+                    sf_close(wav_files[sensor_to_record_idx]);
+                    remove(filenames[sensor_to_record_idx]);
+                } else {
+                    for (int i = 0; i < NUM_SENSORS; i++) {
+                        if (strcmp(config->sensors[i].block, block_to_record) == 0) {
+                            sf_close(wav_files[i]);
+                            remove(filenames[i]);
+                        }
+                    }
+                }
+                return -1; // -1で返すことによって、呼び出し位置(main関数内)でretryする
+            } else {
+                perror("recvfrom");
+                exit(1);
+            }
+        }
+        if (recv_len < DATA_SIZE) {
+            fprintf(stderr, "Error: recvfrom() returned %d\n", recv_len);
+            perror("recvfrom");
+            //break;
+            continue;
+        }
+
+        // packet連番のチェック
+        packet_number = recv_buf[0] | (recv_buf[1] <<8);
+        if ((packet_number - prev_packet_number) > 1) {
+            fprintf(stderr, "Packet Loss is observed at packet: %d\n", packet_number);
+        }
+        prev_packet_number = packet_number;
+
+
+        for (int byte_idx = 2; byte_idx < recv_len; byte_idx += NUM_CHANNELS * sizeof(short)) {
+            for (int channel_idx = 0; channel_idx < NUM_CHANNELS; channel_idx++) {
+                dummy_data_buffer[channel_idx][data_idx] = (int16_t)(recv_buf[byte_idx + channel_idx * 2] | (recv_buf[byte_idx + channel_idx * 2 + 1] << 8));
+                dummy_data_buffer[channel_idx][data_idx] -= 0x7FFF;
+            }
+            data_idx += 1;
+            data_duration += data_period;
+            if (fabs(data_duration - ignore_second) < EPSILON || data_duration > ignore_second)
+                break;
+        }
+    }
+    free_data_buffer(dummy_data_buffer);
 
     // データ受信
+    data_idx = 0;
     data_duration = 0.0;
-    int data_idx = 0;
+
+    // データ受信用のdata_buffer[NUM_CHANNEL][配列を初期化
+    int16_t **data_buffer = create_data_buffer(duration, SAMPLING_RATE); // AFEのサンプリングレートは20kHz固定なので、まずはそれを受信して、後でconfig->sampling_rateへdownsampleする
+
     DEBUG_PRINT("start recording\n");
     //DEBUG_PRINT("packet_number: ");
     while (data_duration < duration) {
