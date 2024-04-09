@@ -67,3 +67,16 @@ sensors: # sensor name, block: A-E, channel: 1-4, gain: 0, 1, 2, 5, 10, 20, 50, 
   - {label: "S20", block: "E", channel: "4", gain: 1}
 sampling_rate: 20000 # Hz
 ```
+
+### 3.2 calibrate the sensor gain in the configuration file
+
+```bash
+calibrate.py config_file sensor_label wav_file1 wav_file2 [...]
+```
+
+#### 3.2.1. Options
+
+* config_file: the configuration file for the sensor data. (i.e., "config.yml")
+* sensor_label: the sensor label in the configuration file.
+* wav_file1, wav_file2: the WAV files for the calibration. The WAV files are the calibration files for the sensor.
+
