@@ -18,9 +18,9 @@
 #include "debug.h"
 
 #define BUF_SIZE 1024
-#define NUM_BLOCKS 5
+#define NUM_BLOCKS 8
 #define NUM_CHANNELS 4
-#define NUM_SENSORS 20
+#define NUM_SENSORS 32
 #define DATA_SIZE 1026
 #define NUM_DATA_PER_PACKET 128 // 128 data per packet
 #define TIMEOUT_SEC 1
@@ -55,6 +55,9 @@ const BlockData block_data_map[] = {
     {"C", 0x03},
     {"D", 0x04},
     {"E", 0x05},
+    {"F", 0x06},
+    {"G", 0x07},
+    {"H", 0x08},
 };
 
 // map: gain <-> send data
