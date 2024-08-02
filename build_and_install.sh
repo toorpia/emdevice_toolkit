@@ -10,7 +10,8 @@ sudo apt-get install -y libyaml-dev libsndfile1-dev
 cd $DIR/emgetdata
 make && sudo make install
 
-cd $DIR/calibrate
+cd $DIR/utils
 sudo cp calibrate.py /usr/local/bin/calibrate.py
+sudo cp generate_sensor_config.py /usr/local/bin/generate_sensor_config.py
 
 exit 0
