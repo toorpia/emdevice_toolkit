@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import sys
 
@@ -32,7 +32,7 @@ sensors: # sensor name, block: A-H, channel: 1-4, gain: 0, 1, 2, 5, 10, 20, 50, 
             channel = 1
             block_index += 1
 
-    return header + '\n'.join(sensors)
+    return header + '\n'.join(sensors) + '\n'  # 最後に改行を追加
 
 def write_config(content, filename='config.yml'):
     with open(filename, 'w') as f:
@@ -40,7 +40,7 @@ def write_config(content, filename='config.yml'):
 
 if __name__ == "__main__":
     if len(sys.argv) != 4:
-        print("Usage: python script.py <prefix> <start_number> <end_number>")
+        print("Usage: python generate_sensor_config.py <prefix> <start_number> <end_number>")
         sys.exit(1)
     
     prefix = sys.argv[1]
