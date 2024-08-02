@@ -20,7 +20,7 @@
 #define BUF_SIZE 1024
 #define NUM_BLOCKS 8
 #define NUM_CHANNELS 4
-#define NUM_SENSORS 32
+#define MAX_SENSORS 32
 #define DATA_SIZE 1026
 #define NUM_DATA_PER_PACKET 128 // 128 data per packet
 #define TIMEOUT_SEC 1
@@ -40,7 +40,8 @@ typedef struct {
 typedef struct {
     char *afe_ip;
     int afe_port;
-    Sensor sensors[NUM_SENSORS];
+    Sensor *sensors;
+    int num_sensors;
     int sampling_rate;
 } Config;
 
@@ -153,7 +154,7 @@ int main(int argc, char *argv[]) {
     // 引数で特定のセンサーが指定された場合、configファイルに当該センサーの定義があるかどうかを確認する
     if (strcmp(sensor_to_record, "") != 0) {
         int found = 0;
-        for (int j = 0; j < NUM_SENSORS; j++) {
+        for (int j = 0; j < config->num_sensors; j++) {
             if (strcmp(config.sensors[j].label, sensor_to_record) == 0) {
                 found = 1;
                 break;
@@ -185,7 +186,7 @@ int main(int argc, char *argv[]) {
         // 特定のセンサーのみ記録する場合は、このブロックに当該センサーラベルがあるかチェック
         if (strcmp(sensor_to_record, "") != 0) {
             int found = 0;
-            for (int j = 0; j < NUM_SENSORS; j++) {
+            for (int j = 0; j < config->num_sensors; j++) {
                 if ((strcmp(config.sensors[j].block, block_data_map[block_count].block) == 0) && (strcmp(config.sensors[j].label, sensor_to_record)) == 0) {
                     found = 1;
                     break;
@@ -272,6 +273,10 @@ void read_config(const char *filename, Config *config) {
 
     yaml_parser_set_input_file(&parser, file);
 
+    // 初期化
+    config->sensors = NULL;
+    config->num_sensors = 0;
+
     while (!done) {
         if (!yaml_parser_parse(&parser, &event)) {
             DEBUG_PRINT("Parser error: %d\n", parser.error);
@@ -297,6 +302,8 @@ void read_config(const char *filename, Config *config) {
                 seq_level++;
             } else if (seq_level > 0) {
                 if (strcmp(key, "label") == 0) {
+                    config->num_sensors++;
+                    config->sensors = realloc(config->sensors, config->num_sensors * sizeof(Sensor));
                     yaml_event_delete(&event);
                     yaml_parser_parse(&parser, &event);
                     config->sensors[sensor_index].label = strdup((char *)event.data.scalar.value);
@@ -326,6 +333,22 @@ void read_config(const char *filename, Config *config) {
 
     yaml_parser_delete(&parser);
     fclose(file);
+
+    // デバッグ出力
+    DEBUG_PRINT("Config loaded:\n");
+    DEBUG_PRINT("AFE IP: %s\n", config->afe_ip);
+    DEBUG_PRINT("AFE Port: %d\n", config->afe_port);
+    DEBUG_PRINT("Sampling Rate: %d\n", config->sampling_rate);
+    DEBUG_PRINT("Number of Sensors: %d\n", config->num_sensors);
+    DEBUG_PRINT("Sensors:\n");
+    for (int i = 0; i < config->num_sensors; i++) {
+        DEBUG_PRINT("  Sensor %d: label=%s, block=%s, channel=%s, gain=%d\n",
+            i,
+            config->sensors[i].label,
+            config->sensors[i].block,
+            config->sensors[i].channel,
+            config->sensors[i].gain);
+    }
 }
 
 int getdata(int sock, Config *config, double duration, const char *block_to_record, const char *sensor_to_record) {
@@ -351,17 +374,17 @@ int getdata(int sock, Config *config, double duration, const char *block_to_reco
     sfinfo.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
 
     // Create and write headers for WAV files
-    SNDFILE *wav_files[NUM_SENSORS] = { NULL };
+    SNDFILE *wav_files[MAX_SENSORS] = { NULL };
 
     // filenameを格納する配列を生成
-    char filenames[NUM_SENSORS][BUF_SIZE * 3] = { "" };
+    char filenames[MAX_SENSORS][BUF_SIZE * 3] = { "" };
 
     // sensor番号とblockにおけるchannel番号との対応を格納する配列を生成
-    int channel_of_sensor[NUM_SENSORS] = { -1 };
+    int channel_of_sensor[MAX_SENSORS] = { -1 };
     int channel_idx = 0; // 0, 1, 2, 3
 
     int sensor_to_record_idx = -1;
-    for (int i = 0; i < NUM_SENSORS; i++) {
+    for (int i = 0; i < config->num_sensors; i++) {
         size_t label_len = strlen(config->sensors[i].label);
         if (strcmp(config->sensors[i].block, block_to_record) == 0) {
             channel_of_sensor[i] = channel_idx;
@@ -373,7 +396,8 @@ int getdata(int sock, Config *config, double duration, const char *block_to_reco
                     if (host_name_len + label_len + filesuffix_len + 3 < sizeof(filenames[i])) {
                         snprintf(filenames[i], sizeof(filenames[i]), "%s_%s_%s", host_name, config->sensors[i].label, filesuffix);
                     } else {
-                        // エラー処理（例: ログ出力や戻り値でエラーを通知）
+                        fprintf(stderr, "Error: filename is too long\n");
+                        exit(1);
                     }
 
                     fprintf(stderr, "creating wav file [%s] for the sensor [%s]\n", filenames[i], config->sensors[i].label);
@@ -388,7 +412,7 @@ int getdata(int sock, Config *config, double duration, const char *block_to_reco
                 if (host_name_len + label_len + filesuffix_len + 3 < sizeof(filenames[i])) {
                     snprintf(filenames[i], sizeof(filenames[i]), "%s_%s_%s", host_name, config->sensors[i].label, filesuffix);
                 } else {
-                    fprintf(stderr, "Error: filename is too long.: ");
+                    fprintf(stderr, "Error: filename is too long: ");
                     fprintf(stderr, "%s_%s_%s", host_name, config->sensors[i].label, filesuffix);
                     exit(1);
                 }
@@ -432,7 +456,7 @@ int getdata(int sock, Config *config, double duration, const char *block_to_reco
                     sf_close(wav_files[sensor_to_record_idx]);
                     remove(filenames[sensor_to_record_idx]);
                 } else {
-                    for (int i = 0; i < NUM_SENSORS; i++) {
+                    for (int i = 0; i < config->num_sensors; i++) {
                         if (strcmp(config->sensors[i].block, block_to_record) == 0) {
                             sf_close(wav_files[i]);
                             remove(filenames[i]);
@@ -497,7 +521,7 @@ int getdata(int sock, Config *config, double duration, const char *block_to_reco
                     sf_close(wav_files[sensor_to_record_idx]);
                     remove(filenames[sensor_to_record_idx]);
                 } else {
-                    for (int i = 0; i < NUM_SENSORS; i++) {
+                    for (int i = 0; i < config->num_sensors; i++) {
                         if (strcmp(config->sensors[i].block, block_to_record) == 0) {
                             sf_close(wav_files[i]);
                             remove(filenames[i]);
@@ -570,7 +594,7 @@ void write_wav_files(SNDFILE **wav_files, int16_t **data_buffer, int data_idx, i
         sf_write_sync(wav_files[sensor_to_record_idx]);
         sf_close(wav_files[sensor_to_record_idx]);
     } else { // write all sensors
-        for (int i = 0; i < NUM_SENSORS; i++) {
+        for (int i = 0; i < config->num_sensors; i++) {
             if (strcmp(config->sensors[i].block, block_to_record) == 0) {
                 if (sf_write_short(wav_files[i], data_buffer[channel_of_sensor[i]], data_idx) != data_idx) {
                     fprintf(stderr, "Error: sf_write_short() failed\n");
@@ -579,7 +603,7 @@ void write_wav_files(SNDFILE **wav_files, int16_t **data_buffer, int data_idx, i
                 sf_write_sync(wav_files[i]);
                 sf_close(wav_files[i]);
             }
-        } // for (int i = 0; i < NUM_SENSORS; i++)
+        } // for (int i = 0; i < config->num_sensors; i++)
     }
 }
 
@@ -605,7 +629,7 @@ int send_start_command_of_block(int sock, struct sockaddr_in *serv_addr, Config 
     for (int j = 0; j < NUM_CHANNELS; j++) {
         snprintf(channel, BUF_SIZE, "%d", j + 1);
         start_command[3 + j] = 0x00;
-        for (int k = 0; k < NUM_SENSORS; k++) {
+        for (int k = 0; k < config->num_sensors; k++) {
             if ((strcmp(config->sensors[k].block, block) == 0) && (strcmp(config->sensors[k].channel, channel) == 0)) {
                 for (unsigned int m = 0; m < sizeof(gain_data_map) / sizeof(GainData); m++) {
                     if (config->sensors[k].gain == gain_data_map[m].gain) {
