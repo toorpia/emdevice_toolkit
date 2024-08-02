@@ -181,8 +181,24 @@ int main(int argc, char *argv[]) {
 
     DEBUG_PRINT("AFE IP: %s\n", config.afe_ip);
     DEBUG_PRINT("AFE Port: %d\n", config.afe_port);
+
+    // config.ymlに存在するブロックを特定
+    char used_blocks[NUM_BLOCKS] = {0};
+    for (int i = 0; i < config.num_sensors; i++) {
+        for (int j = 0; j < NUM_BLOCKS; j++) {
+            if (strcmp(config.sensors[i].block, block_data_map[j].block) == 0) {
+                used_blocks[j] = 1;
+                break;
+            }
+        }
+    }
+
     // block毎にデータを取得
     for (int block_count = 0; block_count < NUM_BLOCKS; block_count++) {
+        if (!used_blocks[block_count]) {
+            continue;  // config.ymlに存在しないブロックはスキップ
+        }
+
         // 特定のセンサーのみ記録する場合は、このブロックに当該センサーラベルがあるかチェック
         if (strcmp(sensor_to_record, "") != 0) {
             int found = 0;
