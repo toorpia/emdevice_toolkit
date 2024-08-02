@@ -186,7 +186,7 @@ int main(int argc, char *argv[]) {
         // 特定のセンサーのみ記録する場合は、このブロックに当該センサーラベルがあるかチェック
         if (strcmp(sensor_to_record, "") != 0) {
             int found = 0;
-            for (int j = 0; j < config->num_sensors; j++) {
+            for (int j = 0; j < config.num_sensors; j++) {
                 if ((strcmp(config.sensors[j].block, block_data_map[block_count].block) == 0) && (strcmp(config.sensors[j].label, sensor_to_record)) == 0) {
                     found = 1;
                     break;
