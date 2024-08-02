@@ -5,7 +5,6 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # install dependencies
 sudo apt-get install -y libyaml-dev libsndfile1-dev
-sudo apt-get install -y python3-ruamel.yaml
 
 # install emgetdata
 cd $DIR/emgetdata
