@@ -154,7 +154,7 @@ int main(int argc, char *argv[]) {
     // 引数で特定のセンサーが指定された場合、configファイルに当該センサーの定義があるかどうかを確認する
     if (strcmp(sensor_to_record, "") != 0) {
         int found = 0;
-        for (int j = 0; j < config->num_sensors; j++) {
+        for (int j = 0; j < config.num_sensors; j++) {
             if (strcmp(config.sensors[j].label, sensor_to_record) == 0) {
                 found = 1;
                 break;
