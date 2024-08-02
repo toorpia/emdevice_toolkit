@@ -19,9 +19,10 @@ sudo cp generate_sensor_config.py /usr/local/bin/generate_sensor_config.py
 cd $DIR/check_wav_effectiveness
 sudo apt-get install -y golang-go
 export GO111MODULE="auto"
-go get "github.com/youpy/go-wav"
+go get "github.com/toorpia/g711"
+go get "github.com/toorpia/go-wav"
 go build -ldflags '-w -s' check_wav_effectiveness.go
-mv check_wav_effectiveness /usr/local/bin
+sudo mv check_wav_effectiveness /usr/local/bin
 
 # install crontab
 crontab -u pi crontab/crontab

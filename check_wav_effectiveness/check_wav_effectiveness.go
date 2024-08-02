@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"flag"
 
-	"github.com/youpy/go-wav"
+	"github.com/toorpia/go-wav"
 )
 
 func main() {
