@@ -1,0 +1,75 @@
+#!/bin/bash
+
+RMS_TH=1.5 # RMS値がこれ未満なら有効データとみなさない。単位%。ただし、カレントディレクトリにconfig.rms_thファイルがある場合は、その中身の設定値を使う。
+CLIP_TH=0.1 # クリッピングデータ点の占める割合がこの値より大きい場合、有効データとみなさない。単位%
+UNSTABILITY_CHECK=1 # 0:不安定性チェックしない、1:不安定性チェックする
+
+DURATION=30
+WORK_DIR=${HOME}/work
+
+export PATH=/usr/local/bin:$PATH
+
+echo -n "Start: batchwise data acquistion: " 1>&2
+date +%Y%m%d%H%M%S
+
+cd "${WORK_DIR}"
+
+# 出力先ディレクトリ
+mkdor -p "${WORK_DIR}/rawdata"
+
+#-----------------------------------------------
+# data aquisition
+#-----------------------------------------------
+cd "${WORK_DIR}/rawdata"
+emgetdata -f ../config.yml -t ${DURATION}
+
+
+#-----------------------------------------------
+# check data effectiveness
+#-----------------------------------------------
+cd "${WORK_DIR}/rawdata"
+for out_data in `find . -type f -name '*[0-9].wav'`
+do
+    if [ "${CLIP_TH}" != "" ]; then
+        clipped_th_option="-tc ${CLIP_TH}"
+    fi
+    if [ "${RMS_TH}" != "" ]; then
+        rms_th_option="-tr ${RMS_TH}"
+    fi
+    if [ "${UNSTABILITY_CHECK}" = "0" ]; then
+        disable_unstability_check_option="-d"
+    fi
+    check_wav_effectiveness ${clipped_th_option} ${rms_th_option} ${disable_unstability_check_option} "${out_data}"
+done
+
+
+#-----------------------------------------------
+# upload raw data
+#-----------------------------------------------
+cd "${WORK_DIR}"
+echo "upload..." 1>&2
+SRCDIR=rawdata
+
+# ラベル付きのデータを別フォルダーで保存して、空のファイルにする(通信費節約のため)
+for i in `find ${SRCDIR} -type f ! -name '*[0-9].wav'`
+do
+  if [ -s $i ]; then
+    to_dir=`echo $i | sed 's/rawdata/rawdata.non-effective/' | xargs dirname`
+    if [ ! -d $to_dir ]; then
+      mkdir -p $to_dir
+    fi
+    mv $i $to_dir
+    touch $i
+  fi
+done
+
+#DSTURL=gs://toortest/
+#gsutil -m mv -r ${SRCDIR}/** ${DSTURL}
+
+#DSTURL=s3://toortest
+#aws s3 sync ${SRCDIR} ${DSTURL}
+
+
+echo -n "complete: " 1>&2
+date +%Y%m%d%H%M%S
+echo "===============================" 1>&2
