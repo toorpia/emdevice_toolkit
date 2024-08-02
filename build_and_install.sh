@@ -25,6 +25,7 @@ go build -ldflags '-w -s' check_wav_effectiveness.go
 sudo mv check_wav_effectiveness /usr/local/bin
 
 # install crontab
+cd $DIR
 crontab -u pi crontab/crontab
 
 exit 0
