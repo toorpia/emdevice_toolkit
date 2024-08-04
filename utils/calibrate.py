@@ -117,10 +117,12 @@ def read_config_file(config_file):
 
 def update_gain_in_config(config_lines, sensor_label, new_gain):
     """Update the gain value in the configuration file."""
-    pattern = re.compile(fr'(\s*label:\s*"{sensor_label}".*gain:\s*)(\d+)')
+    escaped_label = re.escape(sensor_label)
+    pattern = re.compile(rf'(\s*-\s*{{.*label:\s*"{escaped_label}".*gain:\s*)(\d+)(.*}})')
     for i, line in enumerate(config_lines):
-        if sensor_label in line:
-            config_lines[i] = pattern.sub(fr'\1{new_gain}', line)
+        match = pattern.search(line)
+        if match:
+            config_lines[i] = f"{match.group(1)}{new_gain}{match.group(3)}\n"
             return True
     return False
 
@@ -134,8 +136,9 @@ def write_config_file(config_file, config_lines):
         sys.exit(1)
 
 def get_current_gain(config_lines, sensor_label):
-    """Get the current gain value from the configuration file."""
-    pattern = re.compile(fr'label:\s*"{sensor_label}".*gain:\s*(\d+)')
+    """Get the current gain value from the configuration."""
+    escaped_label = re.escape(sensor_label)
+    pattern = re.compile(rf'.*label:\s*"{escaped_label}".*gain:\s*(\d+).*')
     for line in config_lines:
         match = pattern.search(line)
         if match:
