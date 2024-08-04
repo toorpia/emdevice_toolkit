@@ -81,25 +81,12 @@ def determine_gain_adjustment(active_stats, current_gain, available_gains):
         logging.debug(f"Reducing gain from {current_gain} to {new_gain} due to clipping in latest file {latest_file}")
         return new_gain, f"Reduced due to clipping in latest file {latest_file}"
 
-    if latest_stats['RMS amplitude'] < WEAK_SIGNAL_THRESHOLD:
-        if current_gain == available_gains[-1]:
-            return None, f"Signal too weak in latest file {latest_file} at maximum gain. Check sensor attachment."
-        new_gain = available_gains[available_gains.index(current_gain) + 1]
-        logging.debug(f"Increasing gain from {current_gain} to {new_gain} due to weak signal in latest file {latest_file}")
-        return new_gain, f"Increased due to weak signal in latest file {latest_file}"
-
     rms_values = [stats['RMS amplitude'] for stats, _ in active_stats]
     median_rms = statistics.median(rms_values)
 
     logging.debug(f"Median RMS: {median_rms}")
 
-    if 0.05 <= median_rms <= 0.5:
-        return None, "Current gain is appropriate based on recent recordings"
-    elif median_rms < 0.05 and current_gain < available_gains[-1]:
-        new_gain = available_gains[available_gains.index(current_gain) + 1]
-        logging.debug(f"Increasing gain from {current_gain} to {new_gain} due to generally weak signal in recent recordings")
-        return new_gain, "Increased due to generally weak signal in recent recordings"
-    elif median_rms > 0.5 and current_gain > available_gains[0]:
+    if median_rms > 0.5 and current_gain > available_gains[0]:
         new_gain = available_gains[available_gains.index(current_gain) - 1]
         logging.debug(f"Reducing gain from {current_gain} to {new_gain} due to generally strong signal in recent recordings")
         return new_gain, "Reduced due to generally strong signal in recent recordings"
