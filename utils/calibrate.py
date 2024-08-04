@@ -122,7 +122,8 @@ def update_gain_in_config(config_lines, sensor_label, new_gain):
     for i, line in enumerate(config_lines):
         match = pattern.search(line)
         if match:
-            config_lines[i] = f"{match.group(1)}{new_gain}{match.group(3)}"
+            line_ending = '\n' if line.endswith('\n') else ''
+            config_lines[i] = f"{match.group(1)}{new_gain}{match.group(3)}{line_ending}"
             return True
     return False
 
