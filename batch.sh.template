@@ -63,7 +63,7 @@ do
   fi
 done
 
-#DSTURL=gs://toortest/
+#DSTURL=gs://tokuyama/
 #gsutil -m mv -r ${SRCDIR}/** ${DSTURL}
 
 #DSTURL=s3://toortest
