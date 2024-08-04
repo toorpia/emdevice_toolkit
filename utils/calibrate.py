@@ -185,9 +185,9 @@ def backup_config_file(config_path):
 
 def main():
     """Main function to run the calibration script."""
-    if len(sys.argv) < 5:
+    if len(sys.argv) < 4:
         script_name = os.path.basename(sys.argv[0])
-        logging.error(f"Usage: {script_name} config_file sensor_label wav_file1 wav_file2 [...]")
+        logging.error(f"Usage: {script_name} config_file sensor_label wav_file [...]")
         sys.exit(1)
 
     config_file = sys.argv[1]
