@@ -15,7 +15,7 @@ date +%Y%m%d%H%M%S
 cd "${WORK_DIR}"
 
 # 出力先ディレクトリ
-mkdor -p "${WORK_DIR}/rawdata"
+mkdir -p "${WORK_DIR}/rawdata"
 
 #-----------------------------------------------
 # data aquisition
