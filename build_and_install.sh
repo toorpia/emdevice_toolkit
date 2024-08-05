@@ -29,7 +29,7 @@ cd $DIR
 crontab -u pi crontab/crontab
 
 # install batch.sh
-cd $DIR/emgetdata
+cd $DIR
 cp batch.sh.template batch.sh
 
 exit 0
