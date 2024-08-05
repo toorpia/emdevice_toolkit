@@ -29,16 +29,17 @@ emgetdata -f "${CONFIG_FILE}" -t ${DURATION}
 #-----------------------------------------------
 echo "Applying gain reduction..." 1>&2
 
+# config.ymlの最終更新時刻を取得
+config_mtime=$(stat -c %Y ${CONFIG_FILE})
+echo "Using config file timestamp: $(date -d @${config_mtime})" 1>&2
+
 # config.ymlからセンサーラベルを抽出
 sensor_labels=$(grep 'label:' ${CONFIG_FILE} | awk -F'"' '{print $2}')
 
-# config.ymlの最終更新時刻を取得
-config_mtime=$(stat -c %Y ${CONFIG_FILE})
-
 for label in $sensor_labels
 do
-    # config.ymlより新しく、サイズが0より大きいWAVファイルを見つける
-    wav_files=$(find . -name "*${label}*.wav" -newer ${CONFIG_FILE} -size +0c 2>/dev/null)
+    # config_mtimeより新しく、サイズが0より大きいWAVファイルを見つける
+    wav_files=$(find . -name "*${label}*.wav" -newermt "@${config_mtime}" -size +0c 2>/dev/null)
     
     if [ -n "$wav_files" ]; then
         echo "Processing $label" 1>&2
@@ -54,9 +55,9 @@ do
     fi
 done
 
-# config.ymlのタイムスタンプを更新
+# config.ymlのタイムスタンプを現在時刻に更新
 touch ${CONFIG_FILE}
-echo "Updated timestamp of ${CONFIG_FILE}" 1>&2
+echo "Updated timestamp of ${CONFIG_FILE} to $(date)" 1>&2
 
 echo "Gain reduction complete" 1>&2
 
