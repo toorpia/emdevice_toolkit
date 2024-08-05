@@ -12,7 +12,7 @@ make && sudo make install
 
 # install utils
 cd $DIR/utils
-sudo cp calibrate.py /usr/local/bin/calibrate.py
+sudo cp gain_reducer.py /usr/local/bin/gain_reducer.py
 sudo cp generate_sensor_config.py /usr/local/bin/generate_sensor_config.py
 
 # install check_wav_effectiveness
@@ -27,5 +27,9 @@ sudo mv check_wav_effectiveness /usr/local/bin
 # install crontab
 cd $DIR
 crontab -u pi crontab/crontab
+
+# install batch.sh
+cd $DIR/emgetdata
+cp batch.sh.template batch.sh
 
 exit 0
