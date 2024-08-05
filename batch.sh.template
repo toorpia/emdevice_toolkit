@@ -6,6 +6,7 @@ UNSTABILITY_CHECK=1 # 0:不安定性チェックしない、1:不安定性チェ
 
 DURATION=30
 WORK_DIR=${HOME}/work
+CONFIG_FILE="${WORK_DIR}/config.yml"
 
 export PATH=/usr/local/bin:$PATH
 
@@ -21,8 +22,43 @@ mkdir -p "${WORK_DIR}/rawdata"
 # data aquisition
 #-----------------------------------------------
 cd "${WORK_DIR}/rawdata"
-emgetdata -f ../config.yml -t ${DURATION}
+emgetdata -f "${CONFIG_FILE}" -t ${DURATION}
 
+#-----------------------------------------------
+# Apply gain reduction
+#-----------------------------------------------
+echo "Applying gain reduction..." 1>&2
+
+# config.ymlからセンサーラベルを抽出
+sensor_labels=$(grep 'label:' ${CONFIG_FILE} | awk -F'"' '{print $2}')
+
+# config.ymlの最終更新時刻を取得
+config_mtime=$(stat -c %Y ${CONFIG_FILE})
+
+for label in $sensor_labels
+do
+    # config.ymlより新しく、サイズが0より大きいWAVファイルを見つける
+    wav_files=$(find . -name "*${label}*.wav" -newer ${CONFIG_FILE} -size +0c 2>/dev/null)
+    
+    if [ -n "$wav_files" ]; then
+        echo "Processing $label" 1>&2
+        
+        # gain_reducer.pyを実行
+        gain_reducer.py ${CONFIG_FILE} "$label" $wav_files
+        
+        if [ $? -ne 0 ]; then
+            echo "Warning: gain_reducer.py failed for $label" 1>&2
+        fi
+    else
+        echo "No new non-empty WAV files found for $label since last config update" 1>&2
+    fi
+done
+
+# config.ymlのタイムスタンプを更新
+touch ${CONFIG_FILE}
+echo "Updated timestamp of ${CONFIG_FILE}" 1>&2
+
+echo "Gain reduction complete" 1>&2
 
 #-----------------------------------------------
 # check data effectiveness
@@ -63,8 +99,8 @@ do
   fi
 done
 
-#DSTURL=gs://tokuyama/
-#gsutil -m mv -r ${SRCDIR}/** ${DSTURL}
+DSTURL=gs://tokuyama/bc
+gsutil -m mv -r ${SRCDIR}/** ${DSTURL}
 
 #DSTURL=s3://toortest
 #aws s3 sync ${SRCDIR} ${DSTURL}
