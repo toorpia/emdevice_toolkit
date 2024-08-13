@@ -112,9 +112,6 @@ for file in ${SRCDIR}/*.wav; do
     # 送信先のフォルダーURLを作成
     target_url="${DSTURL}/${date_string}"
 
-    # Google Cloud Storage に日付フォルダを作成
-    gsutil mb -p ${target_url} # フォルダーが既に存在する場合は無視されます
-
     # ファイルを日付フォルダーに移動
     gsutil -m mv $file ${target_url}/
 done
