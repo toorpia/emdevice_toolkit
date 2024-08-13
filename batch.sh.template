@@ -100,8 +100,24 @@ do
   fi
 done
 
-DSTURL=gs://tokuyama_bc
-gsutil -m mv -r ${SRCDIR}/** ${DSTURL}
+# Google Cloud Storage へのアップロード
+DSTURL="gs://tokuyama_bc"
+
+# ファイルの処理
+for file in ${SRCDIR}/*.wav; do
+    # ファイル名から日付部分を抽出（例: 20240805）
+    date_string=$(basename "$file" | grep -oP '_\K\d{8}')
+    echo "date_string: ${date_string}"
+
+    # 送信先のフォルダーURLを作成
+    target_url="${DSTURL}/${date_string}"
+
+    # Google Cloud Storage に日付フォルダを作成
+    gsutil mb -p ${target_url} # フォルダーが既に存在する場合は無視されます
+
+    # ファイルを日付フォルダーに移動
+    gsutil -m mv $file ${target_url}/
+done
 
 #DSTURL=s3://toortest
 #aws s3 sync ${SRCDIR} ${DSTURL}
