@@ -1,12 +1,35 @@
 #!/bin/bash
 
-RMS_TH=1.5 # RMS値がこれ未満なら有効データとみなさない。単位%。ただし、カレントディレクトリにconfig.rms_thファイルがある場合は、その中身の設定値を使う。
+WORK_DIR=${HOME}/work # データ取得作業ディレクトリ
+
+# ------------------  default settings ------------------
+# 設備ラベル: これを設定するとデータのクラウドストレージでの保存先バケットとして使用される
+facility=""
+
+# Cloud Storage のバケット名
+DSTURL="gs://tokuyama_bc"
+
+RMS_TH=1.5 # RMS値がこれ未満なら有効データとみなさない。単位%。
 CLIP_TH=0.1 # クリッピングデータ点の占める割合がこの値より大きい場合、有効データとみなさない。単位%
 UNSTABILITY_CHECK=1 # 0:不安定性チェックしない、1:不安定性チェックする
 
-DURATION=30
-WORK_DIR=${HOME}/work
-CONFIG_FILE="${WORK_DIR}/config.yml"
+DURATION=30 # データ取得時間（秒）
+EMGETDATA_CONFIG_FILE="${WORK_DIR}/config.yml" # emgetdataの設定ファイル
+
+# ------------------ load settings ------------------
+if [ -f "${HOME}/batchrc.sh" ]; then
+    source "${HOME}/batchrc.sh"
+fi
+if [ -f "${WORK_DIR}/batchrc.sh" ]; then
+    source "${WORK_DIR}/batchrc.sh"
+fi
+
+
+# ------------------ main ------------------
+# 設備ラベルが設定されている場合、これをクラウドストレージ上のバケットとして用いる
+if [ "${facility}" != "" ]; then
+    DSTURL="${DSTURL}/${facility}"
+fi
 
 export PATH=/usr/local/bin:$PATH
 
@@ -22,7 +45,7 @@ mkdir -p "${WORK_DIR}/rawdata"
 # data aquisition
 #-----------------------------------------------
 cd "${WORK_DIR}/rawdata"
-emgetdata -f "${CONFIG_FILE}" -t ${DURATION}
+emgetdata -f "${EMGETDATA_CONFIG_FILE}" -t ${DURATION}
 
 #-----------------------------------------------
 # Apply gain reduction
@@ -30,11 +53,11 @@ emgetdata -f "${CONFIG_FILE}" -t ${DURATION}
 echo "Applying gain reduction..." 1>&2
 
 # config.ymlの最終更新時刻を取得
-config_mtime=$(stat -c %Y ${CONFIG_FILE})
+config_mtime=$(stat -c %Y ${EMGETDATA_CONFIG_FILE})
 echo "Using config file timestamp: $(date -d @${config_mtime})" 1>&2
 
 # config.ymlからセンサーラベルを抽出
-sensor_labels=$(grep 'label:' ${CONFIG_FILE} | awk -F'"' '{print $2}')
+sensor_labels=$(grep 'label:' ${EMGETDATA_CONFIG_FILE} | awk -F'"' '{print $2}')
 
 for label in $sensor_labels
 do
@@ -45,7 +68,7 @@ do
         echo "Processing $label" 1>&2
         
         # gain_reducer.pyを実行
-        gain_reducer.py ${CONFIG_FILE} "$label" $wav_files
+        gain_reducer.py ${EMGETDATA_CONFIG_FILE} "$label" $wav_files
         
         if [ $? -ne 0 ]; then
             echo "Warning: gain_reducer.py failed for $label" 1>&2
@@ -56,8 +79,8 @@ do
 done
 
 # config.ymlのタイムスタンプを現在時刻に更新
-touch ${CONFIG_FILE}
-echo "Updated timestamp of ${CONFIG_FILE} to $(date)" 1>&2
+touch ${EMGETDATA_CONFIG_FILE}
+echo "Updated timestamp of ${EMGETDATA_CONFIG_FILE} to $(date)" 1>&2
 
 echo "Gain reduction complete" 1>&2
 
@@ -99,9 +122,6 @@ do
     touch $i
   fi
 done
-
-# Google Cloud Storage へのアップロード
-DSTURL="gs://tokuyama_bc"
 
 # ファイルの処理
 for file in ${SRCDIR}/*.wav; do
