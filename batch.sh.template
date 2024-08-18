@@ -9,7 +9,7 @@ facility=""
 # Cloud Storage のバケット名
 DSTURL="gs://tokuyama_bc"
 
-RMS_TH=1.5 # RMS値がこれ未満なら有効データとみなさない。単位%。
+RMS_TH=3.0 # RMS値がこれ未満なら有効データとみなさない。単位%。
 CLIP_TH=0.1 # クリッピングデータ点の占める割合がこの値より大きい場合、有効データとみなさない。単位%
 UNSTABILITY_CHECK=1 # 0:不安定性チェックしない、1:不安定性チェックする
 
