@@ -21,6 +21,6 @@
 # For more information see the manual pages of crontab(5) and cron(8)
 # 
 # m h  dom mon dow   command
-1 * * * *  /home/pi/emdevice_toolkit/batch.sh >> log 2>&1 >> log
+5 * * * *  /home/pi/emdevice_toolkit/batch.sh >> log 2>&1 >> log
 30 2 * * *  /home/pi/emdevice_toolkit/bin/houseKeeping.sh >> houseKeeping.log 2>&1 >> houseKeeping.log
 */5 * * * * /home/pi/emdevice_toolkit//bin/detectReboot.sh | /home/pi/emdevice_toolkit/bin/slackNotify.sh
