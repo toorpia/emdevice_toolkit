@@ -13,7 +13,8 @@ SOX_PATHS = ["/usr/bin/sox", "/usr/local/bin/sox"]
 RMS_THRESHOLD = 0.01
 WEAK_SIGNAL_THRESHOLD = 0.05
 CLIPPING_THRESHOLD = 0.95
-AVAILABLE_GAINS = [0, 1, 2, 5, 10, 20, 50, 100]
+#AVAILABLE_GAINS = [0, 1, 2, 5, 10, 20, 50, 100]
+AVAILABLE_GAINS = [5, 10, 20, 50, 100]
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
