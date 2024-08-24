@@ -24,7 +24,7 @@ CLIP_TH=0.1 # クリッピングデータ点の占める割合がこの値より
 UNSTABILITY_CHECK=1 # 0:不安定性チェックしない、1:不安定性チェックする
 DURATION=30 # データ取得時間（秒）
 EMGETDATA_CONFIG_FILE="${WORK_DIR}/config.yml" # emgetdataの設定ファイル
-MAX_RETRIES=3 # 最大再試行回数
+MAX_RETRIES=1 # 最大再試行回数
 
 # 関数: 設定の読み込み
 load_settings() {
@@ -287,20 +287,18 @@ apply_gain_reduction() {
 }
 
 # 関数: データの整理と移動
+# 関数: データの整理と移動
 organize_and_move_data() {
     if $DEBUG_MODE; then
         echo "Debug: Would move valid data to rawdata directory and process invalid data" 1>&2
         return
     fi
 
-    cd "${WORK_DIR}/rawdata"
-
-    # 有効なデータ（拡張子が.wavのファイル）を移動
-    mv "${WORK_DIR}/rawdata/temp"/*.wav .
+    cd "${WORK_DIR}/rawdata/temp"
 
     # 無効なデータ（拡張子が.weak.wavや.unstable.wavなど）を処理
     mkdir -p "${WORK_DIR}/rawdata.non-effective"
-    for invalid_file in "${WORK_DIR}/rawdata/temp"/*.{weak,unstable,clipped,abnormal}.wav; do
+    for invalid_file in *.{weak,unstable,clipped,abnormal}.wav; do
         if [ -f "$invalid_file" ]; then
             base_name=$(basename "$invalid_file")
             mv "$invalid_file" "${WORK_DIR}/rawdata.non-effective/"
@@ -308,8 +306,16 @@ organize_and_move_data() {
         fi
     done
 
+    # 有効なデータ（拡張子が.wavで、かつ無効な拡張子を持たないファイル）を移動
+    for valid_file in *.wav; do
+        if [ -f "$valid_file" ] && [[ ! "$valid_file" =~ \.(weak|unstable|clipped|abnormal)\.wav$ ]]; then
+            mv "$valid_file" "${WORK_DIR}/rawdata/"
+        fi
+    done
+
     # tempディレクトリをクリーンアップ
-    rm -rf "${WORK_DIR}/rawdata/temp"
+    cd "${WORK_DIR}/rawdata
+    rm -rf temp"
 }
 
 # 関数: クラウドストレージへのファイル移動
