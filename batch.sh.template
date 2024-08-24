@@ -82,7 +82,7 @@ get_block_sensors() {
     fi
 
     # YAMLファイルからセンサー情報を抽出
-    local sensors_data=$(sed -n '/sensors:/,/^[^ ]/p' "${EMGETDATA_CONFIG_FILE}" | sed '$d')
+    local sensors_data=$(sed -n '/sensors:/,$p' "${EMGETDATA_CONFIG_FILE}")
 
     # 各センサーのラベルとブロックを取得
     while IFS= read -r line; do
@@ -299,11 +299,11 @@ organize_and_move_data() {
     mv "${WORK_DIR}/rawdata/temp"/*.wav .
 
     # 無効なデータ（拡張子が.weak.wavや.unstable.wavなど）を処理
-    mkdir -p "${WORK_DIR}/rawdata/non-effective"
+    mkdir -p "${WORK_DIR}/rawdata.non-effective"
     for invalid_file in "${WORK_DIR}/rawdata/temp"/*.{weak,unstable,clipped,abnormal}.wav; do
         if [ -f "$invalid_file" ]; then
             base_name=$(basename "$invalid_file")
-            mv "$invalid_file" "${WORK_DIR}/rawdata/non-effective/"
+            mv "$invalid_file" "${WORK_DIR}/rawdata.non-effective/"
             touch "${WORK_DIR}/rawdata/${base_name}"
         fi
     done
@@ -347,7 +347,6 @@ upload_data() {
     for file in ${SRCDIR}/*.wav; do
         # ファイル名から日付部分を抽出（例: 20240805）
         local date_string=$(basename "$file" | grep -oP '_\K\d{8}')
-        echo "Date string: ${date_string}"
 
         # 送信先のフォルダーURLを作成
         local target_url="${DSTURL}/${date_string}"
