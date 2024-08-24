@@ -314,8 +314,8 @@ organize_and_move_data() {
     done
 
     # tempディレクトリをクリーンアップ
-    cd "${WORK_DIR}/rawdata
-    rm -rf temp"
+    cd "${WORK_DIR}/rawdata"
+    rm -rf temp
 }
 
 # 関数: クラウドストレージへのファイル移動
