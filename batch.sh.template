@@ -1,5 +1,36 @@
 #!/bin/bash
 
+# このスクリプトは、センサーデータの取得、処理、および保存を自動化するためのものです。
+# 主な処理の流れは以下の通りです：
+# 1. 設定の読み込みと初期化
+# 2. センサーデータの取得（emgetdataを使用）
+# 3. データの有効性チェック（check_wav_effectivenessを使用）
+# 4. 設備の稼働状態変化の検出と必要に応じたデータ再取得
+# 5. ゲイン調整（gain_reducer.pyを使用）
+# 6. 有効なデータの移動と整理
+# 7. 無効なデータの処理（移動と空ファイルの作成）
+# 8. クラウドストレージへのデータアップロード
+#
+# このスクリプトは、センサー故障や設備の稼働状態変化に対応し、
+# ブロック単位でデータの信頼性を評価します。
+
+# デバッグモードフラグ
+DEBUG_MODE=false
+
+# コマンドライン引数の処理
+while getopts "d" opt; do
+  case ${opt} in
+    d )
+      DEBUG_MODE=true
+      ;;
+    \? )
+      echo "Usage: $0 [-d]" 1>&2
+      exit 1
+      ;;
+  esac
+done
+
+# 作業ディレクトリの設定
 WORK_DIR=${HOME}/work # データ取得作業ディレクトリ
 
 # ------------------  default settings ------------------
@@ -9,14 +40,23 @@ facility=""
 # Cloud Storage のバケット名
 DSTURL="gs://tokuyama_bc"
 
+# データ有効性チェックのパラメータ
 RMS_TH=3.0 # RMS値がこれ未満なら有効データとみなさない。単位%。
 CLIP_TH=0.1 # クリッピングデータ点の占める割合がこの値より大きい場合、有効データとみなさない。単位%
 UNSTABILITY_CHECK=1 # 0:不安定性チェックしない、1:不安定性チェックする
 
 DURATION=30 # データ取得時間（秒）
 EMGETDATA_CONFIG_FILE="${WORK_DIR}/config.yml" # emgetdataの設定ファイル
+MAX_RETRIES=3 # 最大再試行回数
+
+# デバッグモードの設定
+if $DEBUG_MODE; then
+    DURATION=3
+    echo "Debug mode: DURATION set to ${DURATION} seconds" 1>&2
+fi
 
 # ------------------ load settings ------------------
+# 外部設定ファイルの読み込み
 if [ -f "${HOME}/batchrc.sh" ]; then
     source "${HOME}/batchrc.sh"
 fi
@@ -31,21 +71,119 @@ if [ "${facility}" != "" ]; then
     DSTURL="${DSTURL}/${facility}"
 fi
 
+# PATHの設定
 export PATH=/usr/local/bin:$PATH
 
+# 処理開始時刻の記録
 echo -n "Start: batchwise data acquistion: " 1>&2
 date +%Y%m%d%H%M%S
 
+# 作業ディレクトリへの移動
 cd "${WORK_DIR}"
 
-# 出力先ディレクトリ
+# 出力先ディレクトリの作成
 mkdir -p "${WORK_DIR}/rawdata"
+mkdir -p "${WORK_DIR}/rawdata/temp"
+
+# ブロックごとのセンサー情報を取得
+# この情報は後でブロック単位のデータ有効性チェックに使用される
+declare -A block_sensors
+while IFS=':' read -r key value; do
+    if [[ $key == *"label"* ]]; then
+        label=$(echo $value | tr -d ' "')
+    elif [[ $key == *"block"* ]]; then
+        block=$(echo $value | tr -d ' "')
+        block_sensors[$block]+="$label "
+    fi
+done < <(grep -E "label:|block:" ${EMGETDATA_CONFIG_FILE})
 
 #-----------------------------------------------
-# data aquisition
+# data aquisition and check
 #-----------------------------------------------
-cd "${WORK_DIR}/rawdata"
-emgetdata -f "${EMGETDATA_CONFIG_FILE}" -t ${DURATION}
+# データ取得と有効性チェックを行い、必要に応じて再試行する
+retry_count=0
+while [ $retry_count -lt $MAX_RETRIES ]; do
+    cd "${WORK_DIR}/rawdata/temp"
+    
+    # tempディレクトリ内の既存のWAVファイルを削除
+    rm -f *.wav
+
+    # データ取得
+    emgetdata -f "${EMGETDATA_CONFIG_FILE}" -t ${DURATION}
+
+    # データの有効性チェック
+    state_change_detected=false
+    previous_block_state=""
+    for block in "${!block_sensors[@]}"; do
+        active_count=0
+        inactive_count=0
+        unstable_count=0
+        for sensor in ${block_sensors[$block]}; do
+            out_data=$(find . -type f -name "*${sensor}*[0-9].wav" | sort | tail -n 1)
+            if [ -n "$out_data" ]; then
+                # check_wav_effectivenessのオプション設定
+                if [ "${CLIP_TH}" != "" ]; then
+                    clipped_th_option="-tc ${CLIP_TH}"
+                fi
+                if [ "${RMS_TH}" != "" ]; then
+                    rms_th_option="-tr ${RMS_TH}"
+                fi
+                if [ "${UNSTABILITY_CHECK}" = "0" ]; then
+                    disable_unstability_check_option="-d"
+                fi
+                # データの有効性チェック実行（デバッグモードでも実行）
+                if $DEBUG_MODE; then
+                    echo "Debug: Running check_wav_effectiveness ${clipped_th_option} ${rms_th_option} ${disable_unstability_check_option} ${out_data}" 1>&2
+                fi
+                check_wav_effectiveness ${clipped_th_option} ${rms_th_option} ${disable_unstability_check_option} "${out_data}"
+                
+                # ファイル名の変更を確認し、センサーの状態をカウント
+                new_filename=$(ls "${out_data}"* | grep -v "${out_data}")
+                if [ -z "$new_filename" ]; then
+                    ((active_count++))
+                elif [[ "$new_filename" == *".weak.wav" ]]; then
+                    ((inactive_count++))
+                else
+                    ((unstable_count++))
+                fi
+            fi
+        done
+        
+        # ブロックの状態を多数決で判定
+        if [ $active_count -ge 2 ]; then
+            current_block_state="active"
+        elif [ $inactive_count -ge 2 ]; then
+            current_block_state="inactive"
+        else
+            current_block_state="unstable"
+        fi
+        
+        # ブロックの状態をログ出力
+        echo "Block $block state: $current_block_state (Active: $active_count, Inactive: $inactive_count, Unstable: $unstable_count)" 1>&2
+        
+        # 状態変化の検出
+        if [ -n "$previous_block_state" ] && [ "$current_block_state" != "$previous_block_state" ]; then
+            state_change_detected=true
+            echo "State change detected in block $block" 1>&2
+            break
+        fi
+        
+        previous_block_state=$current_block_state
+    done
+
+    # 状態変化がなければループを抜ける、あれば再試行
+    if [ "$state_change_detected" = false ]; then
+        break
+    else
+        echo "State change detected. Retrying data acquisition..." 1>&2
+        retry_count=$((retry_count + 1))
+    fi
+done
+
+# 最大再試行回数に達した場合のメッセージ
+if [ $retry_count -eq $MAX_RETRIES ]; then
+    echo "Max retries reached. Proceeding with the last acquired data." 1>&2
+fi
 
 #-----------------------------------------------
 # Apply gain reduction
@@ -59,6 +197,7 @@ echo "Using config file timestamp: $(date -d @${config_mtime})" 1>&2
 # config.ymlからセンサーラベルを抽出
 sensor_labels=$(grep 'label:' ${EMGETDATA_CONFIG_FILE} | awk -F'"' '{print $2}')
 
+# 各センサーに対してゲイン調整を適用
 for label in $sensor_labels
 do
     # config_mtimeより新しく、サイズが0より大きいWAVファイルを見つける
@@ -68,7 +207,11 @@ do
         echo "Processing $label" 1>&2
         
         # gain_reducer.pyを実行
-        gain_reducer.py ${EMGETDATA_CONFIG_FILE} "$label" $wav_files
+        if $DEBUG_MODE; then
+            echo "Debug: Would run gain_reducer.py ${EMGETDATA_CONFIG_FILE} ${label} ${wav_files}" 1>&2
+        else
+            gain_reducer.py ${EMGETDATA_CONFIG_FILE} "$label" $wav_files
+        fi
         
         if [ $? -ne 0 ]; then
             echo "Warning: gain_reducer.py failed for $label" 1>&2
@@ -78,68 +221,79 @@ do
     fi
 done
 
-# config.ymlのタイムスタンプを現在時刻に更新
-touch ${EMGETDATA_CONFIG_FILE}
-echo "Updated timestamp of ${EMGETDATA_CONFIG_FILE} to $(date)" 1>&2
+if $DEBUG_MODE; then
+    echo "Debug: Would update timestamp of ${EMGETDATA_CONFIG_FILE}" 1>&2
+else
+    # config.ymlのタイムスタンプを現在時刻に更新
+    touch ${EMGETDATA_CONFIG_FILE}
+    echo "Updated timestamp of ${EMGETDATA_CONFIG_FILE} to $(date)" 1>&2
+fi
 
 echo "Gain reduction complete" 1>&2
 
-#-----------------------------------------------
-# check data effectiveness
-#-----------------------------------------------
-cd "${WORK_DIR}/rawdata"
-for out_data in `find . -type f -name '*[0-9].wav'`
-do
-    if [ "${CLIP_TH}" != "" ]; then
-        clipped_th_option="-tc ${CLIP_TH}"
-    fi
-    if [ "${RMS_TH}" != "" ]; then
-        rms_th_option="-tr ${RMS_TH}"
-    fi
-    if [ "${UNSTABILITY_CHECK}" = "0" ]; then
-        disable_unstability_check_option="-d"
-    fi
-    check_wav_effectiveness ${clipped_th_option} ${rms_th_option} ${disable_unstability_check_option} "${out_data}"
-done
+if ! $DEBUG_MODE; then
+    #-----------------------------------------------
+    # Move valid data to rawdata directory and process invalid data
+    #-----------------------------------------------
+    cd "${WORK_DIR}/rawdata"
 
+    # 有効なデータ（拡張子が.wavのファイル）を移動
+    mv "${WORK_DIR}/rawdata/temp"/*.wav .
 
-#-----------------------------------------------
-# upload raw data
-#-----------------------------------------------
-cd "${WORK_DIR}"
-echo "upload..." 1>&2
-SRCDIR=rawdata
+    # 無効なデータ（拡張子が.weak.wavや.unstable.wavなど）を処理
+    mkdir -p "${WORK_DIR}/rawdata/non-effective"
+    for invalid_file in "${WORK_DIR}/rawdata/temp"/*.{weak,unstable,clipped,abnormal}.wav; do
+        if [ -f "$invalid_file" ]; then
+            # ファイル名を取得
+            base_name=$(basename "$invalid_file")
+            
+            # 無効なファイルをnon-effectiveフォルダに移動
+            mv "$invalid_file" "${WORK_DIR}/rawdata/non-effective/"
+            
+            # 元のディレクトリに同名の空ファイルを作成
+            touch "${WORK_DIR}/rawdata/${base_name}"
+        fi
+    done
 
-# ラベル付きのデータを別フォルダーで保存して、空のファイルにする(通信費節約のため)
-for i in `find ${SRCDIR} -type f ! -name '*[0-9].wav'`
-do
-  if [ -s $i ]; then
-    to_dir=`echo $i | sed 's/rawdata/rawdata.non-effective/' | xargs dirname`
-    if [ ! -d $to_dir ]; then
-      mkdir -p $to_dir
-    fi
-    mv $i $to_dir
-    touch $i
-  fi
-done
+    # tempディレクトリをクリーンアップ
+    rm -rf "${WORK_DIR}/rawdata/temp"
 
-# ファイルの処理
-for file in ${SRCDIR}/*.wav; do
-    # ファイル名から日付部分を抽出（例: 20240805）
-    date_string=$(basename "$file" | grep -oP '_\K\d{8}')
-    echo "date_string: ${date_string}"
+    #-----------------------------------------------
+    # upload raw data
+    #-----------------------------------------------
+    cd "${WORK_DIR}"
+    echo "upload..." 1>&2
+    SRCDIR=rawdata
 
-    # 送信先のフォルダーURLを作成
-    target_url="${DSTURL}/${date_string}"
+    # ファイルの処理
+    for file in ${SRCDIR}/*.wav; do
+        # ファイル名から日付部分を抽出（例: 20240805）
+        date_string=$(basename "$file" | grep -oP '_\K\d{8}')
+        echo "date_string: ${date_string}"
 
-    # ファイルを日付フォルダーに移動
-    gsutil -m mv $file ${target_url}/
-done
+        # 送信先のフォルダーURLを作成
+        target_url="${DSTURL}/${date_string}"
 
-#DSTURL=s3://toortest
-#aws s3 sync ${SRCDIR} ${DSTURL}
+        # ファイルを日付フォルダーに移動
+        gsutil -m mv $file ${target_url}/
+    done
+else
+    echo "Debug: Would move valid data to rawdata directory and process invalid data" 1>&2
+    echo "Debug: Would upload data to ${DSTURL}" 1>&2
+fi
 
-
+# 処理終了時刻の記録
 echo -n "complete: " 1>&2
 date +%Y%m%d%H%M%S
 echo "===============================" 1>&2
+
+if $DEBUG_MODE; then
+    read -p "Do you want to delete the data in ${WORK_DIR}/rawdata/temp? (y/n) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        rm -rf "${WORK_DIR}/rawdata/temp"
+        echo "Data in ${WORK_DIR}/rawdata/temp has been deleted."
+    else
+        echo "Data in ${WORK_DIR}/rawdata/temp has been preserved."
+    fi
+fi
