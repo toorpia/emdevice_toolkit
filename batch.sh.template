@@ -1,145 +1,416 @@
 #!/bin/bash
 
+# このスクリプトは、センサーデータの取得、処理、および保存を自動化するためのものです。
+# 主な処理の流れは以下の通りです：
+# 1. 設定の読み込みと初期化
+# 2. センサーデータの取得（emgetdataを使用）
+# 3. データの有効性チェック（check_wav_effectivenessを使用）
+# 4. 設備の稼働状態変化の検出と必要に応じたデータ再取得
+# 5. ゲイン調整（gain_reducer.pyを使用）
+# 6. 有効なデータの移動と整理
+# 7. 無効なデータの処理（移動と空ファイルの作成）
+# 8. クラウドストレージへのデータアップロード
+
+# デバッグモードフラグ
+DEBUG_MODE=false
+
+# グローバル変数
 WORK_DIR=${HOME}/work # データ取得作業ディレクトリ
-
-# ------------------  default settings ------------------
-# 設備ラベル: これを設定するとデータのクラウドストレージでの保存先バケットとして使用される
-facility=""
-
-# Cloud Storage のバケット名
-DSTURL="gs://tokuyama_bc"
-
-RMS_TH=3.0 # RMS値がこれ未満なら有効データとみなさない。単位%。
+facility="" # 設備ラベル: これを設定するとデータのクラウドストレージでの保存先バケットとして使用される
+DSTURL="gs://tokuyama_bc" # デフォルトのGoogle Cloud Storageバケット
+CLOUD_STORAGE_TYPE="gcs" # デフォルトはGoogle Cloud Storage (gcs or s3)
+RMS_TH=3.0 # RMS値がこれ未満なら有効データとみなさない。単位%
 CLIP_TH=0.1 # クリッピングデータ点の占める割合がこの値より大きい場合、有効データとみなさない。単位%
 UNSTABILITY_CHECK=1 # 0:不安定性チェックしない、1:不安定性チェックする
-
 DURATION=30 # データ取得時間（秒）
 EMGETDATA_CONFIG_FILE="${WORK_DIR}/config.yml" # emgetdataの設定ファイル
+MAX_RETRIES=1 # 最大再試行回数
 
-# ------------------ load settings ------------------
-if [ -f "${HOME}/batchrc.sh" ]; then
-    source "${HOME}/batchrc.sh"
-fi
-if [ -f "${WORK_DIR}/batchrc.sh" ]; then
-    source "${WORK_DIR}/batchrc.sh"
-fi
+# 関数: 設定の読み込み
+load_settings() {
+    # ホームディレクトリと作業ディレクトリの設定ファイルを読み込む
+    if [ -f "${HOME}/batchrc.sh" ]; then
+        source "${HOME}/batchrc.sh"
+    fi
+    if [ -f "${WORK_DIR}/batchrc.sh" ]; then
+        source "${WORK_DIR}/batchrc.sh"
+    fi
 
+    # クラウドストレージタイプに基づいてDSTURLを調整
+    if [ "$CLOUD_STORAGE_TYPE" = "s3" ] && [[ "$DSTURL" == gs://* ]]; then
+        DSTURL=$(echo "$DSTURL" | sed 's/^gs:/s3:/')
+    elif [ "$CLOUD_STORAGE_TYPE" = "gcs" ] && [[ "$DSTURL" == s3://* ]]; then
+        DSTURL=$(echo "$DSTURL" | sed 's/^s3:/gs:/')
+    fi
 
-# ------------------ main ------------------
-# 設備ラベルが設定されている場合、これをクラウドストレージ上のバケットとして用いる
-if [ "${facility}" != "" ]; then
-    DSTURL="${DSTURL}/${facility}"
-fi
+    # 設備ラベルが設定されている場合、これをクラウドストレージ上のバケットとして用いる
+    if [ "${facility}" != "" ]; then
+        DSTURL="${DSTURL}/${facility}"
+    fi
 
-export PATH=/usr/local/bin:$PATH
+    # デバッグモードの場合、データ取得時間を短縮
+    if $DEBUG_MODE; then
+        DURATION=3
+        echo "Debug mode: DURATION set to ${DURATION} seconds" 1>&2
+    fi
+}
 
-echo -n "Start: batchwise data acquistion: " 1>&2
-date +%Y%m%d%H%M%S
+# 関数: ディレクトリの準備
+prepare_directories() {
+    # rawdataディレクトリとtempサブディレクトリを作成
+    mkdir -p "${WORK_DIR}/rawdata"
+    mkdir -p "${WORK_DIR}/rawdata/temp"
+}
 
-cd "${WORK_DIR}"
+# 関数: config.ymlの内容を確認
+check_config_yml() {
+    if $DEBUG_MODE; then
+        echo "Debug: Checking config.yml content" 1>&2
+        echo "Contents of ${EMGETDATA_CONFIG_FILE}:" 1>&2
+        cat "${EMGETDATA_CONFIG_FILE}"
+        echo "End of config.yml content" 1>&2
+    fi
+}
 
-# 出力先ディレクトリ
-mkdir -p "${WORK_DIR}/rawdata"
+# 関数: ブロックごとのセンサー情報を取得
+get_block_sensors() {
+    # ブロックとセンサーの対応関係を保持する連想配列
+    declare -gA block_sensors
 
-#-----------------------------------------------
-# data aquisition
-#-----------------------------------------------
-cd "${WORK_DIR}/rawdata"
-emgetdata -f "${EMGETDATA_CONFIG_FILE}" -t ${DURATION}
+    if $DEBUG_MODE; then
+        echo "Debug: Reading config file: ${EMGETDATA_CONFIG_FILE}" 1>&2
+    fi
 
-#-----------------------------------------------
-# Apply gain reduction
-#-----------------------------------------------
-echo "Applying gain reduction..." 1>&2
+    # YAMLファイルからセンサー情報を抽出
+    local sensors_data=$(sed -n '/sensors:/,$p' "${EMGETDATA_CONFIG_FILE}")
 
-# config.ymlの最終更新時刻を取得
-config_mtime=$(stat -c %Y ${EMGETDATA_CONFIG_FILE})
-echo "Using config file timestamp: $(date -d @${config_mtime})" 1>&2
-
-# config.ymlからセンサーラベルを抽出
-sensor_labels=$(grep 'label:' ${EMGETDATA_CONFIG_FILE} | awk -F'"' '{print $2}')
-
-for label in $sensor_labels
-do
-    # config_mtimeより新しく、サイズが0より大きいWAVファイルを見つける
-    wav_files=$(find . -name "*${label}*.wav" -newermt "@${config_mtime}" -size +0c 2>/dev/null)
-    
-    if [ -n "$wav_files" ]; then
-        echo "Processing $label" 1>&2
-        
-        # gain_reducer.pyを実行
-        gain_reducer.py ${EMGETDATA_CONFIG_FILE} "$label" $wav_files
-        
-        if [ $? -ne 0 ]; then
-            echo "Warning: gain_reducer.py failed for $label" 1>&2
+    # 各センサーのラベルとブロックを取得
+    while IFS= read -r line; do
+        # '#'から始まる行や空行をスキップ
+        if [[ $line =~ ^[[:space:]]*# ]] || [[ -z "${line// }" ]]; then
+            continue
         fi
+        
+        local label=$(echo "$line" | grep -oP 'label:\s*"\K[^"]+')
+        local block=$(echo "$line" | grep -oP 'block:\s*"\K[^"]+')
+        if [ -n "$label" ] && [ -n "$block" ]; then
+            if [ -z "${block_sensors[$block]}" ]; then
+                block_sensors[$block]="$label"
+            else
+                block_sensors[$block]+=" $label"
+            fi
+            if $DEBUG_MODE; then
+                echo "Debug: Added sensor $label to block $block" 1>&2
+            fi
+        fi
+    done <<< "$sensors_data"
+
+    if $DEBUG_MODE; then
+        echo "Debug: Block sensors information:" 1>&2
+        for block in "${!block_sensors[@]}"; do
+            echo "  Block $block: ${block_sensors[$block]}" 1>&2
+        done
+    fi
+}
+
+# 関数: データ取得と有効性チェック
+acquire_and_check_data() {
+    local retry_count=0
+    while [ $retry_count -le $MAX_RETRIES ]; do
+        cd "${WORK_DIR}/rawdata/temp"
+        rm -f *.wav # 既存のWAVファイルを削除
+
+        # emgetdataを使用してデータを取得
+        if $DEBUG_MODE; then
+            echo "Debug: Running emgetdata -f ${EMGETDATA_CONFIG_FILE} -t ${DURATION}" 1>&2
+        fi
+        emgetdata -f "${EMGETDATA_CONFIG_FILE}" -t ${DURATION}
+
+        # データの有効性をチェック
+        if check_data_validity; then
+            return 0 # 有効なデータが取得できた場合
+        fi
+
+        retry_count=$((retry_count + 1))
+        if [ $retry_count -le $MAX_RETRIES ]; then
+            echo "State change detected or invalid data. Retrying data acquisition... (Attempt $retry_count of $MAX_RETRIES)" 1>&2
+        fi
+    done
+    echo "Max retries reached. Proceeding with the last acquired data." 1>&2
+    return 1
+}
+
+# 関数: データの有効性チェック
+check_data_validity() {
+    local all_data_valid=true
+    local previous_block_state=""
+
+    if $DEBUG_MODE; then
+        echo "Debug: Starting data validity check" 1>&2
+        echo "Debug: Number of blocks: ${#block_sensors[@]}" 1>&2
+    fi
+
+    for block in "${!block_sensors[@]}"; do
+        local active_count=0
+        local inactive_count=0
+        local unstable_count=0
+        local total_sensors=0
+
+        if $DEBUG_MODE; then
+            echo "Debug: Checking block $block" 1>&2
+            echo "Debug: Sensors in block $block: ${block_sensors[$block]}" 1>&2
+        fi
+
+        for sensor in ${block_sensors[$block]}; do
+            ((total_sensors++))
+            check_sensor_data "$sensor"
+            local sensor_status=$?
+            
+            if $DEBUG_MODE; then
+                echo "Debug: Sensor $sensor status: $sensor_status" 1>&2
+            fi
+
+            case $sensor_status in
+                0) ((active_count++)) ;;
+                1) ((inactive_count++)) ;;
+                2) ((unstable_count++)) ;;
+                3) 
+                    echo "Warning: No data for sensor $sensor in block $block" 1>&2
+                    ((unstable_count++))
+                    ;;
+            esac
+        done
+        
+         # ブロックの状態を判定
+        local current_block_state
+        local max_count=$(( active_count > inactive_count ? active_count : inactive_count ))
+        max_count=$(( max_count > unstable_count ? max_count : unstable_count ))
+
+        if [ $active_count -eq $max_count ] && [ $inactive_count -eq $max_count ] || \
+           [ $active_count -eq $max_count ] && [ $unstable_count -eq $max_count ] || \
+           [ $inactive_count -eq $max_count ] && [ $unstable_count -eq $max_count ]; then
+            current_block_state="unstable"
+        elif [ $active_count -eq $max_count ]; then
+            current_block_state="active"
+        elif [ $inactive_count -eq $max_count ]; then
+            current_block_state="inactive"
+        else
+            current_block_state="unstable"
+        fi
+        
+        echo "Block $block state: $current_block_state (Active: $active_count, Inactive: $inactive_count, Unstable: $unstable_count, Total: $total_sensors)" 1>&2
+        
+        # 状態変化の検出
+        if [ -n "$previous_block_state" ] && [ "$current_block_state" != "$previous_block_state" ]; then
+            echo "State change detected between blocks: $previous_block_state -> $current_block_state" 1>&2
+            all_data_valid=false
+        fi
+        
+        # ブロック内の無効なデータをチェック
+        if [ $unstable_count -gt 0 ] || [ $((active_count + inactive_count + unstable_count)) -lt $total_sensors ]; then
+            echo "Invalid data detected in block $block" 1>&2
+            all_data_valid=false
+        fi
+        
+        previous_block_state=$current_block_state
+    done
+
+    $all_data_valid
+}
+
+# 関数: センサーデータのチェック
+check_sensor_data() {
+    local sensor=$1
+    local out_data=$(find . -type f -name "*_${sensor}_*[0-9].wav" | sort | tail -n 1)
+    if [ -n "$out_data" ]; then
+        local options=""
+        [ "${CLIP_TH}" != "" ] && options+=" -tc ${CLIP_TH}"
+        [ "${RMS_TH}" != "" ] && options+=" -tr ${RMS_TH}"
+        [ "${UNSTABILITY_CHECK}" = "0" ] && options+=" -d"
+
+        if $DEBUG_MODE; then
+            echo "Debug: Running check_wav_effectiveness $options $out_data" 1>&2
+        fi
+        # check_wav_effectivenessを使用してデータの有効性をチェック
+        check_wav_effectiveness $options "$out_data"
+        
+        # ファイル名の変更を確認し、センサーの状態を判断
+        local base_name=$(basename "$out_data" .wav)
+        local new_filename=$(find . -type f -name "${base_name}*.wav" | grep -v "$out_data")
+        if [ -z "$new_filename" ]; then
+            return 0 # active
+        elif [[ "$new_filename" == *".weak.wav" ]]; then
+            return 1 # inactive
+        else
+            return 2 # unstable
+        fi
+    fi
+    return 3 # no data
+}
+
+# 関数: ゲイン調整の適用
+apply_gain_reduction() {
+    echo "Applying gain reduction..." 1>&2
+    local config_mtime=$(stat -c %Y ${EMGETDATA_CONFIG_FILE})
+    echo "Using config file timestamp: $(date -d @${config_mtime})" 1>&2
+
+    local sensor_labels=$(grep 'label:' ${EMGETDATA_CONFIG_FILE} | awk -F'"' '{print $2}')
+
+    for label in $sensor_labels; do
+        # config_mtimeより新しく、サイズが0より大きいWAVファイルを見つける
+        local wav_files=$(find . -name "*${label}*.wav" -newermt "@${config_mtime}" -size +0c 2>/dev/null)
+        
+        if [ -n "$wav_files" ]; then
+            echo "Processing $label" 1>&2
+            
+            if $DEBUG_MODE; then
+                echo "Debug: Would run gain_reducer.py ${EMGETDATA_CONFIG_FILE} ${label} ${wav_files}" 1>&2
+            else
+                # gain_reducer.pyを使用してゲイン調整を実行
+                gain_reducer.py ${EMGETDATA_CONFIG_FILE} "$label" $wav_files
+                if [ $? -ne 0 ]; then
+                    echo "Warning: gain_reducer.py failed for $label" 1>&2
+                fi
+            fi
+        else
+            echo "No new non-empty WAV files found for $label since last config update" 1>&2
+        fi
+    done
+
+    if $DEBUG_MODE; then
+        echo "Debug: Would update timestamp of ${EMGETDATA_CONFIG_FILE}" 1>&2
     else
-        echo "No new non-empty WAV files found for $label since last config update" 1>&2
+        # config.ymlのタイムスタンプを現在時刻に更新
+        touch ${EMGETDATA_CONFIG_FILE}
+        echo "Updated timestamp of ${EMGETDATA_CONFIG_FILE} to $(date)" 1>&2
     fi
+
+    echo "Gain reduction complete" 1>&2
+}
+
+# 関数: データの整理と移動
+# 関数: データの整理と移動
+organize_and_move_data() {
+    if $DEBUG_MODE; then
+        echo "Debug: Would move valid data to rawdata directory and process invalid data" 1>&2
+        return
+    fi
+
+    cd "${WORK_DIR}/rawdata/temp"
+
+    # 無効なデータ（拡張子が.weak.wavや.unstable.wavなど）を処理
+    mkdir -p "${WORK_DIR}/rawdata.non-effective"
+    for invalid_file in *.{weak,unstable,clipped,abnormal}.wav; do
+        if [ -f "$invalid_file" ]; then
+            base_name=$(basename "$invalid_file")
+            mv "$invalid_file" "${WORK_DIR}/rawdata.non-effective/"
+            touch "${WORK_DIR}/rawdata/${base_name}"
+        fi
+    done
+
+    # 有効なデータ（拡張子が.wavで、かつ無効な拡張子を持たないファイル）を移動
+    for valid_file in *.wav; do
+        if [ -f "$valid_file" ] && [[ ! "$valid_file" =~ \.(weak|unstable|clipped|abnormal)\.wav$ ]]; then
+            mv "$valid_file" "${WORK_DIR}/rawdata/"
+        fi
+    done
+
+    # tempディレクトリをクリーンアップ
+    cd "${WORK_DIR}/rawdata"
+    rm -rf temp
+}
+
+# 関数: クラウドストレージへのファイル移動
+move_to_cloud_storage() {
+    local source_file=$1
+    local target_url=$2
+
+    case $CLOUD_STORAGE_TYPE in
+        "gcs")
+            # Google Cloud Storageへの移動
+            gsutil -m mv "$source_file" "$target_url/"
+            ;;
+        "s3")
+            # AWS S3への移動
+            aws s3 mv "$source_file" "$target_url/"
+            ;;
+        *)
+            echo "Error: Unsupported cloud storage type: $CLOUD_STORAGE_TYPE" 1>&2
+            return 1
+            ;;
+    esac
+}
+
+# 関数: データのアップロード
+upload_data() {
+    if $DEBUG_MODE; then
+        echo "Debug: Would upload data to ${DSTURL}" 1>&2
+        return
+    fi
+
+    cd "${WORK_DIR}"
+    echo "Uploading data..." 1>&2
+    local SRCDIR=rawdata
+
+    for file in ${SRCDIR}/*.wav; do
+        # ファイル名から日付部分を抽出（例: 20240805）
+        local date_string=$(basename "$file" | grep -oP '_\K\d{8}')
+
+        # 送信先のフォルダーURLを作成
+        local target_url="${DSTURL}/${date_string}"
+        move_to_cloud_storage "$file" "$target_url"
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to upload file $file" 1>&2
+        fi
+    done
+}
+
+# メイン処理
+main() {
+    echo -n "Start: batchwise data acquisition: " 1>&2
+    date +%Y%m%d%H%M%S
+
+    load_settings
+    prepare_directories
+    check_config_yml
+    get_block_sensors
+
+    cd "${WORK_DIR}"
+    export PATH=/usr/local/bin:$PATH
+
+    acquire_and_check_data
+    apply_gain_reduction
+    organize_and_move_data
+    upload_data
+
+    echo -n "Complete: " 1>&2
+    date +%Y%m%d%H%M%S
+    echo "===============================" 1>&2
+
+    if $DEBUG_MODE; then
+        read -p "Do you want to delete the data in ${WORK_DIR}/rawdata/temp? (y/n) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            rm -rf "${WORK_DIR}/rawdata/temp"
+            echo "Data in ${WORK_DIR}/rawdata/temp has been deleted."
+        else
+            echo "Data in ${WORK_DIR}/rawdata/temp has been preserved."
+        fi
+    fi
+}
+
+# コマンドライン引数の処理
+while getopts "d" opt; do
+  case ${opt} in
+    d )
+      DEBUG_MODE=true
+      ;;
+    \? )
+      echo "Usage: $0 [-d]" 1>&2
+      exit 1
+      ;;
+  esac
 done
 
-# config.ymlのタイムスタンプを現在時刻に更新
-touch ${EMGETDATA_CONFIG_FILE}
-echo "Updated timestamp of ${EMGETDATA_CONFIG_FILE} to $(date)" 1>&2
-
-echo "Gain reduction complete" 1>&2
-
-#-----------------------------------------------
-# check data effectiveness
-#-----------------------------------------------
-cd "${WORK_DIR}/rawdata"
-for out_data in `find . -type f -name '*[0-9].wav'`
-do
-    if [ "${CLIP_TH}" != "" ]; then
-        clipped_th_option="-tc ${CLIP_TH}"
-    fi
-    if [ "${RMS_TH}" != "" ]; then
-        rms_th_option="-tr ${RMS_TH}"
-    fi
-    if [ "${UNSTABILITY_CHECK}" = "0" ]; then
-        disable_unstability_check_option="-d"
-    fi
-    check_wav_effectiveness ${clipped_th_option} ${rms_th_option} ${disable_unstability_check_option} "${out_data}"
-done
-
-
-#-----------------------------------------------
-# upload raw data
-#-----------------------------------------------
-cd "${WORK_DIR}"
-echo "upload..." 1>&2
-SRCDIR=rawdata
-
-# ラベル付きのデータを別フォルダーで保存して、空のファイルにする(通信費節約のため)
-for i in `find ${SRCDIR} -type f ! -name '*[0-9].wav'`
-do
-  if [ -s $i ]; then
-    to_dir=`echo $i | sed 's/rawdata/rawdata.non-effective/' | xargs dirname`
-    if [ ! -d $to_dir ]; then
-      mkdir -p $to_dir
-    fi
-    mv $i $to_dir
-    touch $i
-  fi
-done
-
-# ファイルの処理
-for file in ${SRCDIR}/*.wav; do
-    # ファイル名から日付部分を抽出（例: 20240805）
-    date_string=$(basename "$file" | grep -oP '_\K\d{8}')
-    echo "date_string: ${date_string}"
-
-    # 送信先のフォルダーURLを作成
-    target_url="${DSTURL}/${date_string}"
-
-    # ファイルを日付フォルダーに移動
-    gsutil -m mv $file ${target_url}/
-done
-
-#DSTURL=s3://toortest
-#aws s3 sync ${SRCDIR} ${DSTURL}
-
-
-echo -n "complete: " 1>&2
-date +%Y%m%d%H%M%S
-echo "===============================" 1>&2
+# スクリプトの実行
+main
