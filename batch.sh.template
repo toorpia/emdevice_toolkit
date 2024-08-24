@@ -62,18 +62,55 @@ prepare_directories() {
     mkdir -p "${WORK_DIR}/rawdata/temp"
 }
 
+# 関数: config.ymlの内容を確認
+check_config_yml() {
+    if $DEBUG_MODE; then
+        echo "Debug: Checking config.yml content" 1>&2
+        echo "Contents of ${EMGETDATA_CONFIG_FILE}:" 1>&2
+        cat "${EMGETDATA_CONFIG_FILE}"
+        echo "End of config.yml content" 1>&2
+    fi
+}
+
 # 関数: ブロックごとのセンサー情報を取得
 get_block_sensors() {
     # ブロックとセンサーの対応関係を保持する連想配列
     declare -gA block_sensors
-    while IFS=':' read -r key value; do
-        if [[ $key == *"label"* ]]; then
-            label=$(echo $value | tr -d ' "')
-        elif [[ $key == *"block"* ]]; then
-            block=$(echo $value | tr -d ' "')
-            block_sensors[$block]+="$label "
+
+    if $DEBUG_MODE; then
+        echo "Debug: Reading config file: ${EMGETDATA_CONFIG_FILE}" 1>&2
+    fi
+
+    # YAMLファイルからセンサー情報を抽出
+    local sensors_data=$(sed -n '/sensors:/,/^[^ ]/p' "${EMGETDATA_CONFIG_FILE}" | sed '$d')
+
+    # 各センサーのラベルとブロックを取得
+    while IFS= read -r line; do
+        # '#'から始まる行や空行をスキップ
+        if [[ $line =~ ^[[:space:]]*# ]] || [[ -z "${line// }" ]]; then
+            continue
         fi
-    done < <(grep -E "label:|block:" ${EMGETDATA_CONFIG_FILE})
+        
+        local label=$(echo "$line" | grep -oP 'label:\s*"\K[^"]+')
+        local block=$(echo "$line" | grep -oP 'block:\s*"\K[^"]+')
+        if [ -n "$label" ] && [ -n "$block" ]; then
+            if [ -z "${block_sensors[$block]}" ]; then
+                block_sensors[$block]="$label"
+            else
+                block_sensors[$block]+=" $label"
+            fi
+            if $DEBUG_MODE; then
+                echo "Debug: Added sensor $label to block $block" 1>&2
+            fi
+        fi
+    done <<< "$sensors_data"
+
+    if $DEBUG_MODE; then
+        echo "Debug: Block sensors information:" 1>&2
+        for block in "${!block_sensors[@]}"; do
+            echo "  Block $block: ${block_sensors[$block]}" 1>&2
+        done
+    fi
 }
 
 # 関数: データ取得と有効性チェック
@@ -84,6 +121,9 @@ acquire_and_check_data() {
         rm -f *.wav # 既存のWAVファイルを削除
 
         # emgetdataを使用してデータを取得
+        if $DEBUG_MODE; then
+            echo "Debug: Running emgetdata -f ${EMGETDATA_CONFIG_FILE} -t ${DURATION}" 1>&2
+        fi
         emgetdata -f "${EMGETDATA_CONFIG_FILE}" -t ${DURATION}
 
         # データの有効性をチェック
@@ -91,7 +131,7 @@ acquire_and_check_data() {
             return 0 # 有効なデータが取得できた場合
         else
             retry_count=$((retry_count + 1))
-            echo "State change detected. Retrying data acquisition..." 1>&2
+            echo "State change detected or invalid data. Retrying data acquisition... (Attempt $retry_count of $MAX_RETRIES)" 1>&2
         fi
     done
     echo "Max retries reached. Proceeding with the last acquired data." 1>&2
@@ -100,50 +140,86 @@ acquire_and_check_data() {
 
 # 関数: データの有効性チェック
 check_data_validity() {
-    local state_change_detected=false
+    local all_data_valid=true
     local previous_block_state=""
+
+    if $DEBUG_MODE; then
+        echo "Debug: Starting data validity check" 1>&2
+        echo "Debug: Number of blocks: ${#block_sensors[@]}" 1>&2
+    fi
+
     for block in "${!block_sensors[@]}"; do
         local active_count=0
         local inactive_count=0
         local unstable_count=0
+        local total_sensors=0
+
+        if $DEBUG_MODE; then
+            echo "Debug: Checking block $block" 1>&2
+            echo "Debug: Sensors in block $block: ${block_sensors[$block]}" 1>&2
+        fi
+
         for sensor in ${block_sensors[$block]}; do
+            ((total_sensors++))
             check_sensor_data "$sensor"
-            case $? in
+            local sensor_status=$?
+            
+            if $DEBUG_MODE; then
+                echo "Debug: Sensor $sensor status: $sensor_status" 1>&2
+            fi
+
+            case $sensor_status in
                 0) ((active_count++)) ;;
                 1) ((inactive_count++)) ;;
                 2) ((unstable_count++)) ;;
+                3) 
+                    echo "Warning: No data for sensor $sensor in block $block" 1>&2
+                    ((unstable_count++))
+                    ;;
             esac
         done
         
-        # ブロックの状態を判定
+         # ブロックの状態を判定
         local current_block_state
-        if [ $active_count -ge 2 ]; then
+        local max_count=$(( active_count > inactive_count ? active_count : inactive_count ))
+        max_count=$(( max_count > unstable_count ? max_count : unstable_count ))
+
+        if [ $active_count -eq $max_count ] && [ $inactive_count -eq $max_count ] || \
+           [ $active_count -eq $max_count ] && [ $unstable_count -eq $max_count ] || \
+           [ $inactive_count -eq $max_count ] && [ $unstable_count -eq $max_count ]; then
+            current_block_state="unstable"
+        elif [ $active_count -eq $max_count ]; then
             current_block_state="active"
-        elif [ $inactive_count -ge 2 ]; then
+        elif [ $inactive_count -eq $max_count ]; then
             current_block_state="inactive"
         else
             current_block_state="unstable"
         fi
         
-        echo "Block $block state: $current_block_state (Active: $active_count, Inactive: $inactive_count, Unstable: $unstable_count)" 1>&2
+        echo "Block $block state: $current_block_state (Active: $active_count, Inactive: $inactive_count, Unstable: $unstable_count, Total: $total_sensors)" 1>&2
         
         # 状態変化の検出
         if [ -n "$previous_block_state" ] && [ "$current_block_state" != "$previous_block_state" ]; then
-            state_change_detected=true
-            echo "State change detected in block $block" 1>&2
-            break
+            echo "State change detected between blocks: $previous_block_state -> $current_block_state" 1>&2
+            all_data_valid=false
+        fi
+        
+        # ブロック内の無効なデータをチェック
+        if [ $unstable_count -gt 0 ] || [ $((active_count + inactive_count + unstable_count)) -lt $total_sensors ]; then
+            echo "Invalid data detected in block $block" 1>&2
+            all_data_valid=false
         fi
         
         previous_block_state=$current_block_state
     done
 
-    ! $state_change_detected
+    $all_data_valid
 }
 
 # 関数: センサーデータのチェック
 check_sensor_data() {
     local sensor=$1
-    local out_data=$(find . -type f -name "*${sensor}*[0-9].wav" | sort | tail -n 1)
+    local out_data=$(find . -type f -name "*_${sensor}_*[0-9].wav" | sort | tail -n 1)
     if [ -n "$out_data" ]; then
         local options=""
         [ "${CLIP_TH}" != "" ] && options+=" -tc ${CLIP_TH}"
@@ -157,7 +233,8 @@ check_sensor_data() {
         check_wav_effectiveness $options "$out_data"
         
         # ファイル名の変更を確認し、センサーの状態を判断
-        local new_filename=$(ls "${out_data}"* | grep -v "${out_data}")
+        local base_name=$(basename "$out_data" .wav)
+        local new_filename=$(find . -type f -name "${base_name}*.wav" | grep -v "$out_data")
         if [ -z "$new_filename" ]; then
             return 0 # active
         elif [[ "$new_filename" == *".weak.wav" ]]; then
@@ -288,6 +365,7 @@ main() {
 
     load_settings
     prepare_directories
+    check_config_yml
     get_block_sensors
 
     cd "${WORK_DIR}"
