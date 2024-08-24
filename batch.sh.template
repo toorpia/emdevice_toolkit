@@ -116,7 +116,7 @@ get_block_sensors() {
 # 関数: データ取得と有効性チェック
 acquire_and_check_data() {
     local retry_count=0
-    while [ $retry_count -lt $MAX_RETRIES ]; do
+    while [ $retry_count -le $MAX_RETRIES ]; do
         cd "${WORK_DIR}/rawdata/temp"
         rm -f *.wav # 既存のWAVファイルを削除
 
@@ -132,12 +132,11 @@ acquire_and_check_data() {
         fi
 
         retry_count=$((retry_count + 1))
-        if [ $retry_count -lt $MAX_RETRIES ]; then
+        if [ $retry_count -le $MAX_RETRIES ]; then
             echo "State change detected or invalid data. Retrying data acquisition... (Attempt $retry_count of $MAX_RETRIES)" 1>&2
-        else
-            echo "Max retries reached. Proceeding with the last acquired data." 1>&2
         fi
     done
+    echo "Max retries reached. Proceeding with the last acquired data." 1>&2
     return 1
 }
 
