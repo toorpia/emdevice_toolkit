@@ -10,6 +10,7 @@
 # 6. 有効なデータの移動と整理
 # 7. 無効なデータの処理（移動と空ファイルの作成）
 # 8. クラウドストレージへのデータアップロード
+# 9. アップロード失敗時のシステム再起動
 
 # デバッグモードフラグ
 DEBUG_MODE=false
@@ -289,7 +290,6 @@ apply_gain_reduction() {
 }
 
 # 関数: データの整理と移動
-# 関数: データの整理と移動
 organize_and_move_data() {
     if $DEBUG_MODE; then
         echo "Debug: Would move valid data to rawdata directory and process invalid data" 1>&2
@@ -341,6 +341,12 @@ move_to_cloud_storage() {
     esac
 }
 
+# 関数: システムの再起動
+reboot_system() {
+    echo "アップロードに失敗したため、システムを再起動します..." 1>&2
+    sudo reboot
+}
+
 # 関数: データのアップロード
 upload_data() {
     if $DEBUG_MODE; then
@@ -351,6 +357,7 @@ upload_data() {
     cd "${WORK_DIR}"
     echo "Uploading data..." 1>&2
     local SRCDIR=rawdata
+    local upload_failed=false
 
     for file in ${SRCDIR}/*.wav; do
         # ファイル名から日付部分を抽出（例: 20240805）
@@ -361,8 +368,13 @@ upload_data() {
         move_to_cloud_storage "$file" "$target_url"
         if [ $? -ne 0 ]; then
             echo "Error: Failed to upload file $file" 1>&2
+            upload_failed=true
         fi
     done
+
+    if $upload_failed; then
+        reboot_system
+    fi
 }
 
 # メイン処理
